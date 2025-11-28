@@ -1,0 +1,87 @@
+/*
+ * (C) Copyright 2025 Hyland (http://hyland.com/)  and others.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * Contributors:
+ *     Thibaud Arguillere
+ */
+package nuxeo.labs.pdf.toolkit.operations;
+
+import org.json.JSONArray;
+import org.nuxeo.ecm.automation.core.Constants;
+import org.nuxeo.ecm.automation.core.annotations.Context;
+import org.nuxeo.ecm.automation.core.annotations.Operation;
+import org.nuxeo.ecm.automation.core.annotations.OperationMethod;
+import org.nuxeo.ecm.automation.core.annotations.Param;
+import org.nuxeo.ecm.automation.core.util.BlobList;
+import org.nuxeo.ecm.core.api.Blob;
+import org.nuxeo.ecm.core.api.Blobs;
+import org.nuxeo.ecm.core.api.CoreSession;
+import org.nuxeo.ecm.core.api.DocumentModel;
+
+import nuxeo.labs.pdf.toolkit.PDFToImages;
+
+/**
+ * We could use the native operation, getPagesAsImages, but it returns images with a 300 DPI and they are
+ * at the size of the pagen which can be big.
+ * => We would have to then use a converter to reduce the size.
+ * We do calculate the images and convert to thumbnail in the same call.
+ */
+@Operation(id = PDFThumbnailsOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Get Thumbnails", description = ""
+        + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
+        + " Calculate thumbnails of each page of the input PDF."
+        + " Returns a JSON Array (as string) of the ordered thumbnails, as base64. Caller can increment an index if needed,"
+        + " the items are ordered form page 1 to last page"
+        + " The operaiton accepts maxWidth (default 256) and maxHeight (defailt 256) optional parameters.")
+public class PDFThumbnailsOp {
+
+    public static final String ID = "PDFLabs.GetThumbnails";
+
+    @Context
+    protected CoreSession session;
+
+    @Param(name = "xpath", required = false)
+    protected String xpath = "file:content";
+
+    @Param(name = "width", required = false)
+    protected Integer width = PDFToImages.DEFAULT_SIZE;
+
+    @Param(name = "height", required = false)
+    protected Integer height = PDFToImages.DEFAULT_SIZE;
+
+    @Param(name = "dpi", required = false)
+    protected Integer dpi = PDFToImages.DEFAULT_DPI;
+
+    @OperationMethod
+    public Blob run(DocumentModel doc) {
+
+        Blob b = (Blob) doc.getPropertyValue(xpath);
+
+        return run(b);
+    }
+
+    @OperationMethod
+    public Blob run(Blob blob) {
+
+        PDFToImages pdfThumbnails = new PDFToImages(blob);
+        pdfThumbnails.setDpi(dpi);
+
+        BlobList thumbnails = pdfThumbnails.createThumbnails(width, height);
+        JSONArray array = PDFToImages.toBase64JSONArray(thumbnails);
+
+        String json = array.toString();
+        return Blobs.createJSONBlob(json);
+
+    }
+}

@@ -1,0 +1,636 @@
+<!--
+`nuxeo-pdf-toolkit`
+@group Nuxeo UI
+@element nuxeo-pdf-toolkit
+-->
+<dom-module id="nuxeo-pdf-toolkit">
+  <template>
+    <style include="nuxeo-styles nuxeo-action-button-styles">
+      :host {
+        display: inline-block;
+      }
+
+      #dialog {
+        width: 80%;
+        /*max-width: 900px;*/
+        height: 80vh;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .dialog-header {
+        padding: 16px 24px;
+        border-bottom: 1px solid #e0e0e0;
+        font-size: 20px;
+        font-weight: 500;
+      }
+
+      .dialog-content {
+        flex: 1;
+        overflow-y: auto;
+        padding: 16px 24px;
+      }
+
+      .thumbnails-container {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+        gap: 16px;
+        padding: 8px;
+      }
+
+      .page-item {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 8px;
+        border: 3px solid #e0e0e0;
+        border-radius: 4px;
+        cursor: move;
+        background: white;
+        transition: all 0.2s;
+      }
+
+      .page-item:hover {
+        border-color: #999;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      }
+
+      .page-item.selected {
+        border-color: var(--nuxeo-primary-color, #0066ff);
+        background-color: #f0f7ff;
+        box-shadow: 0 4px 8px rgba(0,102,255,0.2);
+      }
+
+      .page-item.dragging {
+        opacity: 0.5;
+      }
+
+      .page-item.drag-over-before::before {
+        content: '';
+        position: absolute;
+        left: -8px;
+        top: 0;
+        bottom: 0;
+        width: 4px;
+        background-color: var(--nuxeo-primary-color, #0066ff);
+        border-radius: 2px;
+      }
+
+      .page-item.drag-over-after::after {
+        content: '';
+        position: absolute;
+        right: -8px;
+        top: 0;
+        bottom: 0;
+        width: 4px;
+        background-color: var(--nuxeo-primary-color, #0066ff);
+        border-radius: 2px;
+      }
+
+      .page-item {
+        position: relative;
+      }
+
+      .page-number {
+        margin-top: 8px;
+        font-weight: 500;
+        font-size: 14px;
+        color: #333;
+      }
+
+      .page-thumbnail {
+        width: 100%;
+        max-width: 120px;
+        height: auto;
+        border: 1px solid #ccc;
+        border-radius: 2px;
+      }
+
+      .dialog-actions {
+        padding: 16px 24px;
+        border-top: 1px solid #e0e0e0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+
+      .action-buttons {
+        display: flex;
+        gap: 8px;
+      }
+
+      paper-button.primary {
+        background-color: var(--nuxeo-primary-color, #0066ff);
+        color: white;
+      }
+
+      paper-button.danger {
+        background-color: #d32f2f;
+        color: white;
+      }
+
+      paper-button[disabled] {
+        background-color: #e0e0e0;
+        color: #999;
+      }
+
+      .loading {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        padding: 40px;
+      }
+    </style>
+
+    <nuxeo-operation id="getThumbnailsOp" op="PDFLabs.GetThumbnails"></nuxeo-operation>
+    <nuxeo-operation id="extractOp" op="PDFLabs.ExtractPagesByRange"></nuxeo-operation>
+    <nuxeo-operation id="removePagesOp" op="PDFLabs.RemovePages"></nuxeo-operation>
+    <nuxeo-operation id="reorderOp" op="PDFLabs.ReorderPages"></nuxeo-operation>
+
+    <div class="action" on-tap="_openDialog">
+      <paper-icon-button id="bt" icon="[[icon]]"></paper-icon-button>
+      <span class="label" hidden$="[[!showLabel]]">[[i18n(label)]]</span>
+    </div>
+    <paper-tooltip for="bt">[[i18n(label)]]</paper-tooltip>
+    <!---
+    <paper-button raised on-tap="_openDialog">
+      <iron-icon icon="icons:picture-as-pdf"></iron-icon>
+      PDF Tools
+    </paper-button>
+  -->
+
+    <paper-dialog id="dialog" modal>
+      <div class="dialog-header">
+        [[document.title]]
+      </div>
+
+      <div class="dialog-content">
+        <template is="dom-if" if="[[loading]]">
+          <div class="loading">
+            <paper-spinner active></paper-spinner>
+          </div>
+        </template>
+
+        <template is="dom-if" if="[[!loading]]">
+          <div class="thumbnails-container">
+            <template is="dom-repeat" items="[[pages]]" as="page">
+              <div class$="page-item [[_getSelectedClass(page.selected)]]"
+                   draggable="true"
+                   data-index$="[[index]]"
+                   on-click="_togglePageSelection"
+                   on-dragstart="_onDragStart"
+                   on-dragover="_onDragOver"
+                   on-dragleave="_onDragLeave"
+                   on-drop="_onDrop"
+                   on-dragend="_onDragEnd">
+                <img class="page-thumbnail" src="[[page.image]]" alt="Page [[_computePageNumber(index)]]">
+                <!-- forcing evaluation when the array changes (drag-drop) -->
+                <span class="page-number">[[_computePageNumber(index, pages)]]</span>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+
+      <div class="dialog-actions">
+        <div class="action-buttons">
+          <paper-button class="primary" on-tap="_extractPages" disabled="[[!_hasSelection]]">
+            <iron-icon icon="icons:content-copy"></iron-icon>
+            Extract
+          </paper-button>
+          <paper-button class="danger" on-tap="_removePages" disabled="[[!_hasSelection]]">
+            <iron-icon icon="icons:delete"></iron-icon>
+            Remove
+          </paper-button>
+          <paper-button class="primary" on-tap="_saveReorder" disabled="[[!_hasReordered]]">
+            <iron-icon icon="icons:save"></iron-icon>
+            Save
+          </paper-button>
+        </div>
+        <paper-button on-tap="_closeDialog">
+          <iron-icon icon="icons:close"></iron-icon>
+          Close
+        </paper-button>
+      </div>
+    </paper-dialog>
+
+  </template>
+
+  <script>
+    Polymer({
+      is: 'nuxeo-pdf-toolkit',
+      behaviors: [Nuxeo.LayoutBehavior],
+
+      properties: {
+        document: {
+          type: Object,
+          observer: '_documentChanged'
+        },
+
+        icon: {
+          type: String,
+          value: 'icons:build'
+        },
+
+        label: {
+          type: String,
+          value: 'PDF Toolkit'
+        },
+
+        showLabel: {
+          type: Boolean,
+          value: false
+        },
+
+        pages: {
+          type: Array,
+          value: function() { return []; }
+        },
+
+        loading: {
+          type: Boolean,
+          value: false
+        },
+
+        _hasSelection: {
+          type: Boolean,
+          value: false,
+          computed: '_computeHasSelection(pages.*)'
+        },
+
+        _hasReordered: {
+          type: Boolean,
+          value: false
+        },
+
+        _draggedIndex: {
+          type: Number,
+          value: -1
+        },
+
+        _originalOrder: {
+          type: Array,
+          value: function() { return []; }
+        },
+
+        _lastSelectedIndex: {
+          type: Number,
+          value: -1
+        },
+
+        _autoScrollInterval: {
+          type: Object,
+          value: null
+        }
+      },
+
+      _documentChanged: function() {
+        // Reset state when document changes
+        this.set('pages', []);
+        this.set('_hasReordered', false);
+        this.set('_originalOrder', []);
+      },
+
+      _openDialog: function() {
+        if (!this.document) {
+          this.fire('notify', {message: 'No document provided'});
+          return;
+        }
+
+        this.$.dialog.open();
+        this._loadPages();
+      },
+
+      _closeDialog: function() {
+        this.$.dialog.close();
+      },
+
+      _loadPages: function() {
+        this.set('loading', true);
+        let op = this.$.getThumbnailsOp;
+        op.input = this.document;
+        op.execute()
+          .then(function(response) {
+            // Response is an array of base64 png images
+            // pagesData = [{ image: 'data:image/png;base64,...', index: 0 }, ...]
+            var pagesData = response.map(function(imgData, index) {
+              return {
+                image: "data:image/png;base64," + imgData,
+                selected: false,
+                originalIndex: index + 1
+              };
+            });
+            this.set('pages', pagesData);
+            this.set('_originalOrder', pagesData.map(function(p, i) { return p.originalIndex; }));
+            this.set('_hasReordered', false);
+            this.set('loading', false);
+          }.bind(this))
+          .catch(function(error) {
+            this.set('loading', false);
+            this.fire('notify', {message: 'Error loading PDF pages: ' + error});
+          }.bind(this));
+      },
+
+      _togglePageSelection: function(e) {
+        var index = e.model.index;
+        var isMetaKey = e.metaKey || e.ctrlKey; // Cmd on Mac or Ctrl on Windows
+        var isShiftKey = e.shiftKey;
+
+        if (isShiftKey && this._lastSelectedIndex >= 0) {
+          // Range selection
+          var start = Math.min(this._lastSelectedIndex, index);
+          var end = Math.max(this._lastSelectedIndex, index);
+          
+          for (var i = start; i <= end; i++) {
+            this.set('pages.' + i + '.selected', true);
+          }
+        } else if (isMetaKey) {
+          // Multi-selection (toggle individual)
+          this.set('pages.' + index + '.selected', !this.pages[index].selected);
+          this._lastSelectedIndex = index;
+        } else {
+          // Single selection (clear others)
+          this.pages.forEach(function(page, i) {
+            this.set('pages.' + i + '.selected', i === index);
+          }.bind(this));
+          this._lastSelectedIndex = index;
+        }
+      },
+
+      _computePageNumber: function(index) {
+        if(this.pages && this.pages[index] && this.pages[index].moved && this.pages[index].originalIndex !== (index + 1)) {
+          return "" + (index + 1) + " (" + this.pages[index].originalIndex + ")";
+        }
+        return index + 1;
+      },
+
+      _getSelectedClass: function(selected) {
+        return selected ? 'selected' : '';
+      },
+
+      _computeHasSelection: function() {
+        return this.pages && this.pages.some(function(page) {
+          return page.selected;
+        });
+      },
+
+      _getSelectedPageRanges: function() {
+        var selectedIndices = [];
+        this.pages.forEach(function(page, index) {
+          if (page.selected) {
+            selectedIndices.push(index + 1);
+          }
+        });
+
+        if (selectedIndices.length === 0) {
+          return '';
+        }
+
+        // Convert to range format
+        var ranges = [];
+        var start = selectedIndices[0];
+        var prev = selectedIndices[0];
+
+        for (var i = 1; i <= selectedIndices.length; i++) {
+          if (i === selectedIndices.length || selectedIndices[i] !== prev + 1) {
+            if (start === prev) {
+              ranges.push(start.toString());
+            } else {
+              ranges.push(start + '-' + prev);
+            }
+            if (i < selectedIndices.length) {
+              start = selectedIndices[i];
+              prev = selectedIndices[i];
+            }
+          } else {
+            prev = selectedIndices[i];
+          }
+        }
+
+        return ranges.join(',');
+      },
+
+      _extractPages: function() {
+        var pageRange = this._getSelectedPageRanges();
+        if (!pageRange) {
+          return;
+        }
+
+        this.$.extractOp.input = this.document;
+        this.$.extractOp.params = {"pageRange": pageRange};
+
+        this.$.extractOp.execute()
+          .then(function(response) {
+            this._downloadBlob(response);
+          }.bind(this))
+          .catch(function(error) {
+            alert("An error occured: " + error);
+          }.bind(this));
+      },
+
+      _removePages: function() {
+        var pageRange = this._getSelectedPageRanges();
+        if (!pageRange) {
+          return;
+        }
+
+        if (!confirm('Are you sure you want to remove the selected pages?')) {
+          return;
+        }
+
+        this.$.removePagesOp.input = this.document;
+        this.$.removePagesOp.params = {"pageRange": pageRange};
+
+        this.$.removePagesOp.execute()
+          .then(function(response) {
+            this._downloadBlob(response);
+          }.bind(this))
+          .catch(function(error) {
+            alert("An error occured: " + error);
+          }.bind(this));
+      },
+
+      _saveReorder: function() {
+        var newOrder = this.pages.map(function(page) {
+          return page.originalIndex;
+        });
+
+        this.$.reorderOp.input = this.document;
+        this.$.reorderOp.params = {"pageOrderJsonStr": JSON.stringify(newOrder)};
+
+        this.$.reorderOp.execute()
+          .then(function(response) {
+            this._downloadBlob(response);
+          }.bind(this))
+          .catch(function(error) {
+            alert("An error occured: " + error);
+          }.bind(this));
+      },
+
+      _onDragStart: function(e) {
+        this._draggedIndex = parseInt(e.currentTarget.dataset.index);
+        e.currentTarget.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/html', e.currentTarget.innerHTML);
+        
+        // Start auto-scroll monitoring
+        this._startAutoScroll();
+      },
+
+      _onDragOver: function(e) {
+        if (e.preventDefault) {
+          e.preventDefault();
+        }
+        e.dataTransfer.dropEffect = 'move';
+        
+        // Store mouse position for auto-scroll
+        this._dragMouseY = e.clientY;
+        
+        // Determine if we're closer to the left or right edge of the item
+        var rect = e.currentTarget.getBoundingClientRect();
+        var mouseX = e.clientX;
+        var itemCenterX = rect.left + rect.width / 2;
+        
+        // Remove all drag-over classes first
+        e.currentTarget.classList.remove('drag-over-before', 'drag-over-after');
+        
+        // Add appropriate class based on position
+        if (mouseX < itemCenterX) {
+          e.currentTarget.classList.add('drag-over-before');
+        } else {
+          e.currentTarget.classList.add('drag-over-after');
+        }
+        
+        return false;
+      },
+
+      _onDragLeave: function(e) {
+        e.currentTarget.classList.remove('drag-over-before', 'drag-over-after');
+      },
+
+      _onDrop: function(e) {
+        if (e.stopPropagation) {
+          e.stopPropagation();
+        }
+        e.currentTarget.classList.remove('drag-over-before', 'drag-over-after');
+
+        var dropIndex = parseInt(e.currentTarget.dataset.index);
+        if (this._draggedIndex !== dropIndex && this._draggedIndex >= 0) {
+          // Determine if we should insert before or after based on mouse position
+          var rect = e.currentTarget.getBoundingClientRect();
+          var mouseX = e.clientX;
+          var itemCenterX = rect.left + rect.width / 2;
+          
+          var insertIndex = dropIndex;
+          
+          // If dropping on the right side, insert after
+          if (mouseX >= itemCenterX) {
+            insertIndex = dropIndex + 1;
+          }
+          
+          // Adjust insert index if dragging from before the drop position
+          if (this._draggedIndex < insertIndex) {
+            insertIndex--;
+          }
+          
+          // Reorder the pages array
+          var draggedPage = this.pages[this._draggedIndex];
+          var newPages = this.pages.slice();
+          newPages.splice(this._draggedIndex, 1);
+          newPages.splice(insertIndex, 0, draggedPage);
+
+          var currentOrder = newPages.map(function(p, i) { return p.originalIndex; });
+          var hasChanged = !this._arraysEqual(currentOrder, this._originalOrder);
+
+          if(hasChanged) {
+            draggedPage.moved = true;
+          } else {
+            // Reset moved flags if order matches original
+            newPages.forEach(function(p) { p.moved = false; });
+          }
+
+          this.set('pages', newPages);
+          this.set('_hasReordered', hasChanged);
+        }
+
+        return false;
+      },
+
+      _onDragEnd: function(e) {
+        e.currentTarget.classList.remove('dragging');
+        this._draggedIndex = -1;
+        this._stopAutoScroll();
+        // Remove any lingering drag-over classes
+        var items = this.shadowRoot.querySelectorAll('.page-item');
+        items.forEach(function(item) {
+          item.classList.remove('drag-over-before', 'drag-over-after');
+        });
+      },
+
+      _startAutoScroll: function() {
+        this._stopAutoScroll();
+        this._autoScrollInterval = setInterval(function() {
+          this._performAutoScroll();
+        }.bind(this), 50);
+      },
+
+      _stopAutoScroll: function() {
+        if (this._autoScrollInterval) {
+          clearInterval(this._autoScrollInterval);
+          this._autoScrollInterval = null;
+        }
+      },
+
+      _performAutoScroll: function() {
+        if (!this._dragMouseY) {
+          return;
+        }
+
+        var dialogContent = this.shadowRoot.querySelector('.dialog-content');
+        if (!dialogContent) {
+          return;
+        }
+
+        var rect = dialogContent.getBoundingClientRect();
+        var scrollThreshold = 100; // pixels from edge to trigger scroll
+        var scrollSpeed = 10; // pixels per interval
+
+        // Check if near top
+        if (this._dragMouseY - rect.top < scrollThreshold) {
+          dialogContent.scrollTop -= scrollSpeed;
+        }
+        // Check if near bottom
+        else if (rect.bottom - this._dragMouseY < scrollThreshold) {
+          dialogContent.scrollTop += scrollSpeed;
+        }
+      },
+
+      _arraysEqual: function(a, b) {
+        if (a.length !== b.length) return false;
+        for (var i = 0; i < a.length; i++) {
+          if (a[i] !== b[i]) return false;
+        }
+        return true;
+      },
+
+      _downloadBlob: function(operationResult) {
+        let contentDisposition = operationResult.headers.get('Content-Disposition');
+        let filenameMatches = contentDisposition
+                                .match(/filename[^;=\n]*=([^;\n]*''([^;\n]*)|[^;\n]*)/)
+                                .filter(function(match) {
+                                return !!match;
+                              });
+        let filename = decodeURI(filenameMatches[filenameMatches.length - 1]);
+        operationResult.blob()
+              .then(function(blob) {
+          let a = document.createElement('a');
+          a.style = 'display: none';
+          a.download = filename;
+          a.href = URL.createObjectURL(blob);
+          a.click();
+          URL.revokeObjectURL(a.href);
+        });
+      }
+    });
+  </script>
+</dom-module>
