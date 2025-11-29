@@ -7,7 +7,11 @@
 
 ## Manipulate PDFs from the UI
 
-The plugin displays a dialog with the thumbnails of the pages of a PDF. User can:
+The plugin displays a "PDF Toolkit" button for document which have a `file:content` blob whose mime type is "application/pdf" (see below how to overrid this button). Clicking this button displays dialog with the thumbnails of the pages of a PDF.
+
+<img src="README-Medias/01-Dialog.png" alt="nuxeo-labs-pdf-toolkit" width="800">
+
+User can:
 
 * Select 1-N pages (with command/ctrl-clic and shift-click)
 * Reorganize pages by drag-drop
@@ -22,14 +26,58 @@ For now, **each of these actions downloads the resulting PDF**. Original Documen
 
 Also, double-clic on a thumbnail displays a bigger preview of the page.
 
-<img src="README-Medias/01-Dialog.png" alt="nuxeo-labs-pdf-toolkit" width="800">
-
-
 <br />
+
+## Tuning the UI
+
+### The "PDF Toolkit" Button
+
+The plugin deploys a contribution to the DOCUMENTS_ACTION slot (see [nuxeo-pdf-toolkit-bundle.html](nuxeo-labs-pdf-toolkit-webui/src/main/resources/web/nuxeo.war/ui/nuxeo-pdf-toolkit/nuxeo-pdf-toolkit-bundle.html)).
+
+To override it, copy the contribution and tune it, typically in yout Studio project custom bundle. Here are some examples:
+
+* To disable it:
+
+```html
+<nuxeo-slot-content name="pdfToolkit" slot="DOCUMENT_ACTIONS" order="1" disabled>
+</nuxeo-slot-content>
+```
+
+* To change the icon (default is `icons:build`), add the `icon` attribute to the call to `nuxeo-pdf-toolkit`:
+
+```html
+<nuxeo-slot-content name="pdfToolkit" slot="DOCUMENT_ACTIONS" order="1">
+  . . .
+        <nuxeo-pdf-toolkit document="[[document]]" icon="nuxeo:search"></nuxeo-pdf-toolkit>
+  . . .
+</nuxeo-slot-content>
+```
+
+* To change the filter, display the button only for `Contract` (and keep the text on "application/pdf"):
+
+```html
+<nuxeo-slot-content name="pdfToolkit" slot="DOCUMENT_ACTIONS" order="1">
+  <template>
+    <nuxeo-filter document="[[document]]" type="Contract" expression="document.properties[&quot;file:content&quot;] !&#x3D;&#x3D; null &amp;&amp; document.properties[&quot;file:content&quot;][&quot;mime-type&quot;] &#x3D;&#x3D;&#x3D; &quot;application/pdf&quot;" user="[[user]]">
+    . . .
+</nuxeo-slot-content>
+```
+
+
+### The Whole Dialog Itself
+
+If you want to tune the dialog, you must import it in you Studio project, and it must be created at the correct place, so it overrides the file deployed by the plugin.
+
+* Go to Designer > Resources
+* Select "UI"
+* Create a folder, named "nuxeo-pdf-toolkit"
+* Select this "nuxeo-pdf-toolkit" folder, create a new element, named "nuxeo-pdf-toolkit.html"
+* Paste the whole content of the original file
+* Tune it as needed.
 
 ## Operations
 
-Every action of the dialog is backed by operation that can be used, of course, outside the context of this UI:
+Every action of the dialog is backed by an operation that can be used, of course, outside the context of this UI:
 
 * PDFLabs.GetThumbnails
 * PDFLabs.JpegImagePreview
