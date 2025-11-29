@@ -19,7 +19,7 @@ Then user can:
 
 For now, each of these actions download the resulting PDF. Original Document is not modified.
 
-WORK IN PROGRESS: Allows for replacing current pdf, +/- with a verison, add to files:files, create a derivative, ...
+WORK IN PROGRESS: Allows for replacing current pdf, +/- with a version, add to files:files, create a derivative, ...
 
 <img src="README-Medias/01-Dialog.png" alt="nuxeo-labs-pdf-toolkit" width="800">
 
