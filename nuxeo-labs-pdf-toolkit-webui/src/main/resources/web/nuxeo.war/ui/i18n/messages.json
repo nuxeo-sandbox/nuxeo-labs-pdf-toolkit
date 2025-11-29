@@ -1,5 +1,6 @@
 {
   "pdftoolkit.label.extract": "Extract",
   "pdftoolkit.label.remove": "Remove",
-  "pdftoolkit.label.reorg": "Reorganize"
+  "pdftoolkit.label.reorg": "Reorganize",
+  "pdftoolkit.label.close": "Close"
 }

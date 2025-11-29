@@ -112,6 +112,8 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
+        margin-top: 5px;
+        margin-bottom: 5px;
       }
 
       .action-buttons {
@@ -140,12 +142,60 @@
         align-items: center;
         padding: 40px;
       }
+
+      #previewDialog {
+        width: 90%;
+        height: 90vh;
+        display: flex;
+        flex-direction: column;
+        padding: 0;
+      }
+
+      .preview-content {
+        flex: 1;
+        overflow: auto;
+        padding: 0;
+        margin: 20px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        background: #f5f5f5;
+        position: relative;
+      }
+
+      .preview-image {
+        max-width: 95%;
+        max-height: 95%;
+        object-fit: contain;
+        border-style: solid;
+        border-bottom-width: 3px;
+        border-color: lightgray;
+      }
+
+      .preview-close-button {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        z-index: 10;
+        background: rgba(255, 255, 255, 0.9);
+        border-radius: 50%;
+        min-width: 40px;
+        width: 40px;
+        height: 40px;
+        padding: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      }
+
+      .preview-close-button:hover {
+        background: white;
+      }
     </style>
 
     <nuxeo-operation id="getThumbnailsOp" op="PDFLabs.GetThumbnails"></nuxeo-operation>
     <nuxeo-operation id="extractOp" op="PDFLabs.ExtractPagesByRange"></nuxeo-operation>
     <nuxeo-operation id="removePagesOp" op="PDFLabs.RemovePages"></nuxeo-operation>
     <nuxeo-operation id="reorderOp" op="PDFLabs.ReorderPages"></nuxeo-operation>
+    <nuxeo-operation id="jpegPreviewOp" op="PDFLabs.JpegImagePreview"></nuxeo-operation>
 
     <div class="action" on-tap="_openDialog">
       <paper-icon-button id="bt" icon="[[icon]]"></paper-icon-button>
@@ -178,6 +228,7 @@
                    draggable="true"
                    data-index$="[[index]]"
                    on-click="_togglePageSelection"
+                   on-dblclick="_previewPage"
                    on-dragstart="_onDragStart"
                    on-dragover="_onDragOver"
                    on-dragleave="_onDragLeave"
@@ -196,21 +247,39 @@
         <div class="action-buttons">
           <paper-button class="primary" on-tap="_extractPages" disabled="[[!_hasSelection]]">
             <iron-icon icon="icons:content-copy"></iron-icon>
-            Extract
+            [[i18n('pdftoolkit.label.extract')]]
           </paper-button>
           <paper-button class="danger" on-tap="_removePages" disabled="[[!_hasSelection]]">
             <iron-icon icon="icons:delete"></iron-icon>
-            Remove
+            [[i18n('pdftoolkit.label.remove')]]
           </paper-button>
           <paper-button class="primary" on-tap="_saveReorder" disabled="[[!_hasReordered]]">
             <iron-icon icon="icons:save"></iron-icon>
-            Save
+            [[i18n('pdftoolkit.label.reorg')]]
           </paper-button>
         </div>
         <paper-button on-tap="_closeDialog">
           <iron-icon icon="icons:close"></iron-icon>
-          Close
+          [[i18n('pdftoolkit.label.close')]]
         </paper-button>
+      </div>
+    </paper-dialog>
+    
+    <paper-dialog id="previewDialog" modal>
+      <div class="preview-content">
+        <paper-icon-button class="preview-close-button"
+                            icon="icons:close"
+                            on-tap="_closePreviewDialog"></paper-icon-button>
+        
+        <template is="dom-if" if="[[loadingPreview]]">
+          <div class="loading">
+            <paper-spinner active></paper-spinner>
+          </div>
+        </template>
+
+        <template is="dom-if" if="[[!loadingPreview]]">
+          <img class="preview-image" src="[[previewImageSrc]]" alt="Page preview">
+        </template>
       </div>
     </paper-dialog>
 
@@ -281,6 +350,16 @@
         _autoScrollInterval: {
           type: Object,
           value: null
+        },
+
+        loadingPreview: {
+          type: Boolean,
+          value: false
+        },
+
+        previewImageSrc: {
+          type: String,
+          value: ''
         }
       },
 
@@ -303,6 +382,43 @@
 
       _closeDialog: function() {
         this.$.dialog.close();
+      },
+
+      _previewPage: function(e) {
+        var index = e.model.index;
+        var pageNumber = index + 1;
+
+        this.set('loadingPreview', true);
+        this.set('previewImageSrc', '');
+        this.$.previewDialog.open();
+
+        var op = this.$.jpegPreviewOp;
+        op.input = this.document;
+        op.params = { pageNumber: pageNumber };
+
+        op.execute()
+          .then(function(response) {
+            return response.blob();
+          }.bind(this))
+          .then(function(blob) {
+            var url = URL.createObjectURL(blob);
+            this.set('previewImageSrc', url);
+            this.set('loadingPreview', false);
+          }.bind(this))
+          .catch(function(error) {
+            this.set('loadingPreview', false);
+            this.fire('notify', {message: 'Error loading page preview: ' + error});
+            this.$.previewDialog.close();
+          }.bind(this));
+      },
+
+      _closePreviewDialog: function() {
+        // Clean up the blob URL to free memory
+        if (this.previewImageSrc && this.previewImageSrc.startsWith('blob:')) {
+          URL.revokeObjectURL(this.previewImageSrc);
+        }
+        this.set('previewImageSrc', '');
+        this.$.previewDialog.close();
       },
 
       _loadPages: function() {
