@@ -431,7 +431,7 @@
             // pagesData = [{ image: 'data:image/png;base64,...', index: 0 }, ...]
             var pagesData = response.map(function(imgData, index) {
               return {
-                image: "data:image/png;base64," + imgData,
+                image: "data:image/jpeg;base64," + imgData,
                 selected: false,
                 originalIndex: index + 1
               };

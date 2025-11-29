@@ -12,20 +12,41 @@ The plugin displays a dialog with the thumbnails of the pages of a PDF. User can
 * Select 1-N pages (with command/ctrl-clic and shift-click)
 * Reorganize pages by drag-drop
 
-Then user can:
-* Extract selecte page(s)
+User can then:
+
+* Extract selected page(s)
 * Remove selected page(s)
 * Generate pdf with the new page order
 
-For now, each of these actions download the resulting PDF. Original Document is not modified.
+For now, **each of these actions downloads the resulting PDF**. Original Document is never modified.
 
-WORK IN PROGRESS: Allows for replacing current pdf, +/- with a version, add to files:files, create a derivative, ...
+Also, double-clic on a thumbnail displays a bigger preview of the page.
 
 <img src="README-Medias/01-Dialog.png" alt="nuxeo-labs-pdf-toolkit" width="800">
 
 
 <br />
 
+## Operations
+
+Every action of the dialog is backed by operation that can be used, of course, outside the context of this UI:
+
+* PDFLabs.GetThumbnails
+* PDFLabs.JpegImagePreview
+* PDFLabs.ExtractPagesByRange
+* PDFLabs.RemovePages
+* PDFLabs.ReorderPages
+
+
+
+## To Do - Possibly
+
+* Actions with the resulting pdf:
+  * Store in file content (replkace current pdf), with opetionaly creating a version before
+  * Add to files:files,
+  * Create a new document (a derivative)
+    * With keeping the relation in a field?
+* Generating the thumbnails is not cached. So, displaying 3 times the same PDF makes Nuxeo calculate thumbnails 3 times. This could be optimized using one among different Nuxeo caches.
 
 
 ## How to build
