@@ -37,8 +37,8 @@ import nuxeo.labs.pdf.toolkit.PDFPageExtractor;
 @Operation(id = PDFPageExtractorOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Extract Pages by Range", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
         + " pageRange is a string, required, formated as when you display a print dialog, with pages starting at 1."
-        + " For example, '2-5' removes page 2 to 5 (inclusive). '2-5,8, 10-14' removes pages 2 to 5, 8 and 10 to 14."
-        + " Notice there also is a PDF.ExtractPages operaiton, with accepts only a start-end pages.")
+        + " For example, '2-5' extracts page 2 to 5 (inclusive). '2-5,8, 10-14' extracts pages 2 to 5, 8 and 10 to 14."
+        + " Notice there also is a PDF.ExtractPages operation provided by the platform, which accepts only a start-end pages.")
 public class PDFPageExtractorOp {
 
     public static final String ID = "PDFLabs.ExtractPagesByRange";
