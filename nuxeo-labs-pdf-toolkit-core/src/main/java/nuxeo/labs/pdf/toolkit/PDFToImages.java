@@ -30,7 +30,6 @@ import java.util.Map;
 
 import javax.imageio.ImageIO;
 
-import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -56,13 +55,15 @@ import org.nuxeo.runtime.api.Framework;
  */
 public class PDFToImages {
 
-    public static int DEFAULT_SIZE = 512;
+    public static int DEFAULT_THUMBNAIL_SIZE = 512;
 
     public static int DEFAULT_DPI = 512;
+    
+    public static int PREVIEW_PAGE_MAX_SIZE = 1024;
 
-    protected int width = DEFAULT_SIZE;
+    protected int width = DEFAULT_THUMBNAIL_SIZE;
 
-    protected int height = DEFAULT_SIZE;
+    protected int height = DEFAULT_THUMBNAIL_SIZE;
 
     protected int dpi = DEFAULT_DPI;
 
@@ -97,11 +98,11 @@ public class PDFToImages {
     // Misc. ways to set the dimension
     // ========================================
     public void setWidth(int value) {
-        width = value > 0 ? value : DEFAULT_SIZE;
+        width = value > 0 ? value : DEFAULT_THUMBNAIL_SIZE;
     }
 
     public void setheight(int value) {
-        height = value > 0 ? value : DEFAULT_SIZE;
+        height = value > 0 ? value : DEFAULT_THUMBNAIL_SIZE;
     }
 
     public void setSize(int size) {
@@ -119,7 +120,7 @@ public class PDFToImages {
     public void setSize(String size) {
 
         if (StringUtils.isBlank(size)) {
-            setSize(DEFAULT_SIZE);
+            setSize(DEFAULT_THUMBNAIL_SIZE);
             return;
         }
 
@@ -205,10 +206,10 @@ public class PDFToImages {
             height = Integer.parseInt(hStr);
 
             if (width <= 0) {
-                width = DEFAULT_SIZE;
+                width = DEFAULT_THUMBNAIL_SIZE;
             }
             if (height == 0) {
-                height = DEFAULT_SIZE;
+                height = DEFAULT_THUMBNAIL_SIZE;
             }
 
             return createThumbnails();
@@ -242,7 +243,7 @@ public class PDFToImages {
                 // Create scaled thumbnail
                 BufferedImage thumb = scaleToFit(pageImage, width, height);
 
-                Blob resultBlob = saveAsPng(thumb, pageIndex + 1);
+                Blob resultBlob = imageToBlob(thumb, "jpg", ".jpg", "image/jpeg", pageIndex + 1);
 
                 results.add(resultBlob);
             }
@@ -257,7 +258,7 @@ public class PDFToImages {
     /**
      * Return the image preview, with no resizing.
      * Only dpi can be tuned (previous call to setDpi()) if nneded.
-     * It resizes it at max 1024/1024
+     * It resizes it at max PREVIEW_PAGE_SIZE/PREVIEW_PAGE_SIZE
      * 
      * @param pageNum
      * @return
@@ -278,29 +279,24 @@ public class PDFToImages {
             int pageIndex = pageNum - 1;
             BufferedImage pageImage = renderer.renderImageWithDPI(pageIndex, 300, ImageType.RGB);
 
-            // pageImage = scaleToFit(pageImage, 1024, 1024);
+            // pageImage = scaleToFit(pageImage, PREVIEW_PAGE_SIZE, PREVIEW_PAGE_SIZE);
 
-            Blob resultBlob = saveAsPng(pageImage, pageNum);
+            Blob resultBlob = imageToBlob(pageImage, "jpg", ".jpg", "image/jpeg", pageNum);
 
             SimpleBlobHolder bh = new SimpleBlobHolder(resultBlob);
             Map<String, Serializable> parameters = new HashMap<>();
 
-            parameters.put(ImagingConvertConstants.OPTION_RESIZE_WIDTH, 1024);
-            parameters.put(ImagingConvertConstants.OPTION_RESIZE_HEIGHT, 1024);
+            parameters.put(ImagingConvertConstants.OPTION_RESIZE_WIDTH, PREVIEW_PAGE_MAX_SIZE);
+            parameters.put(ImagingConvertConstants.OPTION_RESIZE_HEIGHT, PREVIEW_PAGE_MAX_SIZE);
             parameters.put(ImagingConvertConstants.CONVERSION_FORMAT, ImagingConvertConstants.JPEG_CONVERSATION_FORMAT);
 
             BlobHolder holder = Framework.getService(ConversionService.class).convert("pictureResize", bh, parameters);
-            resultBlob = holder.getBlob();
+            Blob resizedBlob = holder.getBlob();
             // Make sure to realign values
-            resultBlob.setMimeType("image/jpeg");
-            String fileName = resultBlob.getFilename();
-            if (StringUtils.isBlank(fileName)) {
-                fileName = pdfBlob.getFilename() == null ? "pdf-preview-p" + pageNum : pdfBlob.getFilename();
-            }
-            fileName.replace(".pdf", ".jpg");
-            resultBlob.setFilename(fileName);
+            resizedBlob.setMimeType("image/jpeg");
+            resultBlob.setFilename(resultBlob.getFilename());
 
-            return resultBlob;
+            return resizedBlob;
 
         } catch (IOException e) {
             throw new NuxeoException("Failed to extract the page and make it a PNG.", e);
@@ -312,30 +308,24 @@ public class PDFToImages {
     // Utilities
     // ========================================
     // pageNum starts at 1
-    protected Blob saveAsPng(BufferedImage img, int pageNum) throws IOException {
+    protected Blob imageToBlob(BufferedImage img, String formatName, String fileExtension, String mimeType, int pageNum)
+            throws IOException {
 
-        String fileNameNoExt;
-        String fileName = pdfBlob.getFilename();
-        if (StringUtils.isBlank(fileName)) {
-            fileNameNoExt = "pdf-img";
-        } else {
-            fileNameNoExt = FilenameUtils.getBaseName(fileName);
-        }
+        String fileNameNoExt = PDFTools.getFileNameNoExtension(pdfBlob, "pdf-img", "-p" + pageNum);
 
-        String imgFileNameNoExt = fileNameNoExt + "-p" + pageNum;
-        File resultFile = Framework.createTempFile(imgFileNameNoExt, ".png");
-        ImageIO.write(img, "png", resultFile);
+        File resultFile = Framework.createTempFile(fileNameNoExt, fileExtension);
+        ImageIO.write(img, formatName, resultFile);
 
         FileBlob result = new FileBlob(resultFile);
-        result.setFilename(imgFileNameNoExt + ".png");
-        result.setMimeType("image/png");
+        result.setFilename(fileNameNoExt + fileExtension);
+        result.setMimeType(mimeType);
 
         Framework.trackFile(resultFile, result);
 
         return result;
 
     }
-    
+
     /**
      * Return an array of Base64 encoding of the input blobs (in same order)
      * 

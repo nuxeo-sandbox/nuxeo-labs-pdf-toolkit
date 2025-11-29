@@ -41,9 +41,9 @@ import nuxeo.labs.pdf.toolkit.PDFToImages;
 @Operation(id = PDFThumbnailsOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Get Thumbnails", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
         + " Calculate thumbnails of each page of the input PDF."
-        + " Returns a JSON Array (as string) of the ordered thumbnails, as base64. Caller can increment an index if needed,"
-        + " the items are ordered form page 1 to last page"
-        + " The operaiton accepts maxWidth (default 256) and maxHeight (defailt 256) optional parameters.")
+        + " Returns a JSON Array (as string) of the ordered thumbnails, jpeg, as base64."
+        + " The operation accepts maxWidth (default 512), maxHeight (defailt 512) and dpi (default 150) as optional parameters."
+        + " Warning: as all is in memory as base64, don't use big images and high dpi.")
 public class PDFThumbnailsOp {
 
     public static final String ID = "PDFLabs.GetThumbnails";
@@ -55,10 +55,10 @@ public class PDFThumbnailsOp {
     protected String xpath = "file:content";
 
     @Param(name = "width", required = false)
-    protected Integer width = PDFToImages.DEFAULT_SIZE;
+    protected Integer width = PDFToImages.DEFAULT_THUMBNAIL_SIZE;
 
     @Param(name = "height", required = false)
-    protected Integer height = PDFToImages.DEFAULT_SIZE;
+    protected Integer height = PDFToImages.DEFAULT_THUMBNAIL_SIZE;
 
     @Param(name = "dpi", required = false)
     protected Integer dpi = PDFToImages.DEFAULT_DPI;

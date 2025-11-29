@@ -32,19 +32,56 @@ import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.impl.blob.FileBlob;
 
 /**
- * Centralized utilities
- * 
- * @since TODO
+ * Centralized code originally copy/pasted in several places.
  */
 public class PDFTools {
-    
-    // This performs a deep copy of the pdf.
+
+    /**
+     * Deep copy of the PDF
+     * 
+     * @param original
+     * @return
+     * @throws IOException
+     * @since TODO
+     */
     public static PDDocument cloneDocument(PDDocument original) throws IOException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         original.save(baos);
         return Loader.loadPDF(baos.toByteArray());
     }
-    
+
+    /**
+     * Return a file name to be used as base name.
+     * Example:<br>
+     * {@code String fileNameNoExt = PDFTools.getFileNameNoExtension(blob, "pdf-extracted", "-p3");}
+     * If blob file name is "mydoc.pdf", returns "mydoc-p3".<br>
+     * If blob has no filename, returns "pdf-extracted-p3"<br>
+     * <br>
+     * {@code String fileNameNoExt = PDFTools.getFileNameNoExtension(blob, "pdf-extracted", null);}
+     * Returns "mydoc" or "pdf-extracted"<br>
+     * 
+     * @param blob
+     * @param defaultName
+     * @param suffixBeforeExt
+     * @return
+     * @since TODO
+     */
+    public static String getFileNameNoExtension(Blob blob, String defaultName, String suffixBeforeExt) {
+
+        String fileNameNoExt;
+        String fileName = blob.getFilename();
+        if (StringUtils.isBlank(fileName)) {
+            fileNameNoExt = defaultName;
+        } else {
+            fileNameNoExt = FilenameUtils.getBaseName(fileName);
+        }
+        if (StringUtils.isNotBlank(suffixBeforeExt)) {
+            fileNameNoExt += suffixBeforeExt;
+        }
+
+        return fileNameNoExt;
+    }
+
     /**
      * Centralize the same code used in several places.
      * 
@@ -55,26 +92,20 @@ public class PDFTools {
      * @return
      * @throws IOException
      */
-    public static Blob saveToFileBlob(Blob source, PDDocument newPdf, String defaultNameNoExt, String suffixBeforeExt) throws IOException {
-        
-        String fileNameNoExt = source.getFilename();
-        if (StringUtils.isBlank(fileNameNoExt)) {
-            fileNameNoExt = defaultNameNoExt;
-        } else {
-            fileNameNoExt = FilenameUtils.getBaseName(fileNameNoExt);
-        }
-        if(StringUtils.isNotBlank(suffixBeforeExt)) {
-            fileNameNoExt += suffixBeforeExt;
-        }
+    public static Blob saveToFileBlob(Blob source, PDDocument newPdf, String defaultNameNoExt, String suffixBeforeExt)
+            throws IOException {
+
+        String fileNameNoExt = PDFTools.getFileNameNoExtension(source, defaultNameNoExt, suffixBeforeExt);
+
         File tempFile = File.createTempFile(fileNameNoExt, ".pdf");
         newPdf.save(tempFile);
         Blob finalBlob = new FileBlob(tempFile);
         finalBlob.setFilename(fileNameNoExt + ".pdf");
         finalBlob.setMimeType("application/pdf");
-        
+
         return finalBlob;
     }
-    
+
     /**
      * Parse a print-style page range into a set of 1-based page numbers.
      * 
@@ -137,6 +168,7 @@ public class PDFTools {
 
     /**
      * Throws error if the page is not a valid number (starting at 1)
+     * 
      * @param page
      * @param pageCount
      * @param segment

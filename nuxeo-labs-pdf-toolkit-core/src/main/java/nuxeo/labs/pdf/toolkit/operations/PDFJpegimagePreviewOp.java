@@ -18,14 +18,19 @@
  */
 package nuxeo.labs.pdf.toolkit.operations;
 
+import java.io.IOException;
+import java.util.Base64;
+
 import org.nuxeo.ecm.automation.core.Constants;
 import org.nuxeo.ecm.automation.core.annotations.Context;
 import org.nuxeo.ecm.automation.core.annotations.Operation;
 import org.nuxeo.ecm.automation.core.annotations.OperationMethod;
 import org.nuxeo.ecm.automation.core.annotations.Param;
 import org.nuxeo.ecm.core.api.Blob;
+import org.nuxeo.ecm.core.api.Blobs;
 import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
+import org.nuxeo.ecm.core.api.NuxeoException;
 
 import nuxeo.labs.pdf.toolkit.PDFToImages;
 
@@ -47,6 +52,9 @@ public class PDFJpegimagePreviewOp {
 
     @Param(name = "pageNumber", required = true)
     protected Integer pageNumber;
+    
+    @Param(name = "asBase64", required = false)
+    protected Boolean asBase64 = false;
 
     @OperationMethod
     public Blob run(DocumentModel doc) {
@@ -62,6 +70,17 @@ public class PDFJpegimagePreviewOp {
         PDFToImages pageExtractor = new PDFToImages(blob);
 
         Blob jpeg = pageExtractor.getJpegPreviewImage(pageNumber);
+        
+        if(asBase64) {
+            byte[] bytes;
+            try {
+                bytes = jpeg.getByteArray();
+            } catch (IOException e) {
+                throw new NuxeoException(e);
+            }
+            String base64 = Base64.getEncoder().encodeToString(bytes);
+            jpeg = Blobs.createBlob(base64);
+        }
 
         return jpeg;
 

@@ -18,7 +18,7 @@
     </dependency>
     <dependency>
       <groupId>org.nuxeo.ecm.core</groupId>
-      <artifactId>nuxeo-core-convert-api</artifactId>
+      <artifactId>nuxeo-core-convert</artifactId>
       <scope>provided</scope>
     </dependency>
     <dependency>
@@ -31,11 +31,13 @@
       <artifactId>nuxeo-automation-test</artifactId>
       <scope>test</scope>
     </dependency>
-        <dependency>
-            <groupId>org.nuxeo.ecm.platform</groupId>
-            <artifactId>nuxeo-platform-imaging-core</artifactId>
-            <type>test-jar</type>
-            <scope>test</scope>
-        </dependency>
+    <!--
+    <dependency>
+      <groupId>org.nuxeo.ecm.platform</groupId>
+      <artifactId>nuxeo-platform-imaging-core</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+  -->
   </dependencies>
 </project>
