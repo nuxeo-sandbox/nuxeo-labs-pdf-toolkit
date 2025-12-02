@@ -1,0 +1,133 @@
+<!--
+-->
+<dom-module id="nuxeo-pdf-toolkit-preview">
+  <template>
+    <style>
+      :host {
+        display: block;
+      }
+
+      #previewDialog {
+        width: 90%;
+        height: 90vh;
+        display: flex;
+        flex-direction: column;
+        padding: 0;
+      }
+
+      .preview-content {
+        flex: 1;
+        overflow: auto;
+        padding: 0;
+        margin: 20px;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        background: #f5f5f5;
+        position: relative;
+      }
+
+      .preview-image {
+        max-width: 95%;
+        max-height: 95%;
+        object-fit: contain;
+        border-style: solid;
+        border-bottom-width: 3px;
+        border-color: lightgray;
+      }
+
+      .preview-close-button {
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        z-index: 10;
+        background: rgba(255, 255, 255, 0.9);
+        border-radius: 50%;
+        min-width: 40px;
+        width: 40px;
+        height: 40px;
+        padding: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      }
+
+      .preview-close-button:hover {
+        background: white;
+      }
+    </style>
+
+    <nuxeo-operation id="jpegPreviewOp" op="PDFLabs.JpegImagePreview"></nuxeo-operation>
+
+    <paper-dialog id="previewDialog" modal>
+      <div class="preview-content">
+        <paper-icon-button class="preview-close-button"
+                            icon="icons:close"
+                            on-tap="_closePreviewDialog"></paper-icon-button>
+        
+        <template is="dom-if" if="[[_loadingPreview]]">
+          <div class="loading">
+            <paper-spinner active></paper-spinner>
+          </div>
+        </template>
+
+        <template is="dom-if" if="[[!_loadingPreview]]">
+          <img class="preview-image" src="[[_previewImageSrc]]" alt="Page preview">
+        </template>
+      </div>
+    </paper-dialog>
+  </template>
+
+  <script>
+    Polymer({
+      is: 'nuxeo-pdf-toolkit-preview',
+
+      properties: {
+        document: Object,
+        page: Number,
+
+        _loadingPreview: Boolean,
+        _previewImageSrc: String
+      },
+
+      observers: [
+        '_loadPreviewPage(document, page)'
+      ],
+
+      _loadPreviewPage: function(document, page) {
+        if (document && page) {
+          this.set('_loadingPreview', true);
+          this.set('_previewImageSrc', '');
+          this.$.previewDialog.open();
+
+          var op = this.$.jpegPreviewOp;
+          op.input = document;
+          op.params = { pageNumber: page };
+
+          op.execute()
+            .then(function(response) {
+              return response.blob();
+            }.bind(this))
+            .then(function(blob) {
+              var url = URL.createObjectURL(blob);
+              this.set('_previewImageSrc', url);
+              this.set('_loadingPreview', false);
+            }.bind(this))
+            .catch(function(error) {
+              this.set('_loadingPreview', false);
+              this.fire('notify', {message: 'Error loading page preview: ' + error});
+              this.$.previewDialog.close();
+            }.bind(this));
+        }
+      },
+
+      _closePreviewDialog: function() {
+        // Clean up the blob URL to free memory
+        if (this._previewImageSrc && this._previewImageSrc.startsWith('blob:')) {
+          URL.revokeObjectURL(this._previewImageSrc);
+        }
+        this.set('_previewImageSrc', '');
+        this.$.previewDialog.close();
+      }
+
+    });
+  </script>
+</dom-module>
