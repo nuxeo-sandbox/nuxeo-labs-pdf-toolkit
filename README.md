@@ -66,7 +66,7 @@ To override it, copy the contribution and tune it, typically in your Studio proj
 
 ### The Whole Dialog Itself
 
-If you want to tune the dialog, you must import it in your Studio project, and it must be created at the correct place, so it overrides the file deployed by the plugin.
+If you want to tune the dialog, you must import it in your Studio project, and it must be created at the correct place, so it overrides the file deployed by the plugin. Notice the whole plugin actually uses 3 elements, you can tune each of them of course: nuxeo-pdf-toolkit, nuxeo-pdf-toolkit-thumbnails and nuxeo-pdf-toolkit-preview. To override nuxeo-pdf-toolkit, for example, you would do the following:
 
 * Go to Designer > Resources
 * Select "UI"
@@ -74,6 +74,7 @@ If you want to tune the dialog, you must import it in your Studio project, and i
 * Select this "nuxeo-pdf-toolkit" folder, create a new element, named "nuxeo-pdf-toolkit.html"
 * Paste the whole content of the original file
 * Tune it as needed.
+
 
 ## Operations
 
