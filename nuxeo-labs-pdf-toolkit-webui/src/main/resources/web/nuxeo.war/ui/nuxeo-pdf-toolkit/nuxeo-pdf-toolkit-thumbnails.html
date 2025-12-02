@@ -109,8 +109,8 @@ Parent passes an array of image sources (URLs or data URLs).
                on-dragend="_onDragEnd">
             <img class="page-thumbnail"
                  src="[[page.image]]"
-                 alt="Page [[_computePageNumber(index)]]">
-            <span class="page-number">[[_computePageNumber(index, pages)]]</span>
+                 alt$="Page [[_computePageNumber(index, page.originalPageNumber)]]">
+            <span class="page-number">[[_computePageNumber(index, page.originalPageNumber)]]</span>
           </div>
         </template>
       </div>
@@ -270,14 +270,14 @@ Parent passes an array of image sources (URLs or data URLs).
         this.set('hasSelection', this._computeHasSelection());
       },
 
-      _computePageNumber: function(index) {
-        let pageNumber = index + 1;
+      _computePageNumber: function(index, originalPageNumber) {
+        var pageNumber = index + 1;
 
-        if(pageNumber !== this.pages[index].originalPageNumber){
-          return pageNumber + ' (' + this.pages[index].originalPageNumber + ')';
+        if (pageNumber !== originalPageNumber) {
+          return pageNumber + ' (' + originalPageNumber + ')';
         }
 
-        return index + 1;
+        return pageNumber;
       },
 
       _getSelectedClass: function(selected) {
