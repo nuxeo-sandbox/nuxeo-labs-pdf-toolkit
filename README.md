@@ -7,16 +7,16 @@
 
 ## Manipulate PDFs from the UI
 
-The plugin displays a "PDF Toolkit" button for document which have a `file:content` blob whose mime type is "application/pdf" (see below how to overrid this button). Clicking this button displays dialog with the thumbnails of the pages of a PDF.
+The plugin displays a "PDF Toolkit" button for documents which have a `file:content` blob whose mime type is "application/pdf" (see below how to override this button). Clicking this button displays dialog with the thumbnails of the pages of a PDF.
 
 <img src="README-Medias/01-Dialog.png" alt="nuxeo-labs-pdf-toolkit" width="800">
 
-User can:
+Users can:
 
 * Select 1-N pages (with command/ctrl-clic and shift-click)
 * Reorganize pages by drag-drop
 
-User can then:
+Users can then:
 
 * Extract selected page(s)
 * Remove selected page(s)
@@ -24,7 +24,7 @@ User can then:
 
 For now, **each of these actions downloads the resulting PDF**. Original Document is never modified.
 
-Also, double-clic on a thumbnail displays a bigger preview of the page.
+Also, double-click on a thumbnail displays a bigger preview of the page.
 
 <br />
 
@@ -34,7 +34,7 @@ Also, double-clic on a thumbnail displays a bigger preview of the page.
 
 The plugin deploys a contribution to the DOCUMENTS_ACTION slot (see [nuxeo-pdf-toolkit-bundle.html](nuxeo-labs-pdf-toolkit-webui/src/main/resources/web/nuxeo.war/ui/nuxeo-pdf-toolkit/nuxeo-pdf-toolkit-bundle.html)).
 
-To override it, copy the contribution and tune it, typically in yout Studio project custom bundle. Here are some examples:
+To override it, copy the contribution and tune it, typically in your Studio project custom bundle. Here are some examples:
 
 * To disable it:
 
@@ -53,7 +53,7 @@ To override it, copy the contribution and tune it, typically in yout Studio proj
 </nuxeo-slot-content>
 ```
 
-* To change the filter, display the button only for `Contract` (and keep the text on "application/pdf"):
+* To change the filter, display the button only for  `Contract`(and keep the text on "application/pdf"):
 
 ```html
 <nuxeo-slot-content name="pdfToolkit" slot="DOCUMENT_ACTIONS" order="1">
@@ -66,7 +66,7 @@ To override it, copy the contribution and tune it, typically in yout Studio proj
 
 ### The Whole Dialog Itself
 
-If you want to tune the dialog, you must import it in you Studio project, and it must be created at the correct place, so it overrides the file deployed by the plugin.
+If you want to tune the dialog, you must import it in your Studio project, and it must be created at the correct place, so it overrides the file deployed by the plugin.
 
 * Go to Designer > Resources
 * Select "UI"
@@ -91,11 +91,11 @@ Returns a JSON array of Base64 encoded jpeg thumbnails (so the result can be use
 
 * Input: Either a `blob` or a `document`. If a `document`, `xpath` is the field to use, `file:content` by default.
 * Output: JSON Array `blob` of the ordered thumbnails, jpeg, as base64.
-* Parameter(s):
+* Parameters:
   * `xpath`: String, optional, used if input is `document`. `file:content` by default.
   * `width`: Integer, optional. The max. width of each thumbnail. Default value is 512.
   * `height`: Integer, optional. The max. height of each thumbnail. Default value is 512.
-  * `dpi`: Integer, optional. The dpi ti use chen creating the images. Default value is 150.
+  * `dpi`: Integer, optional. The dpi to use when creating the images. Default value is 150.
 
 > [!WARNING]
 > As all is in memory as base64, don't use big images and high dpi
@@ -108,10 +108,10 @@ Returns a `blob`, the jpeg of the preview, size max 1024x1024, and dpi 300.
 
 * Input: Either a `blob` or a `document`. If a `document`, `xpath` is the field to use, `file:content` by default.
 * Output: `blob`, the jpeg preview of the page
-* Parameter(s):
+* Parameters:
   * `xpath`: String, optional, used if input is `document`. `file:content` by default.
   * `pageNumber`: Integer, required. The page to preview, starting at 1. If it is an invalid page number, a Java `IllegalArgumentException` is thrown.
-  * `asBase64`: Boolean, optional (defauilt `false`). returns instead a text blob of the base64 encoding of the image.
+  * `asBase64`: Boolean, optional (default `false`). If `ture`, returns instead a text blob of the base64 encoding of the image.
 
 <br />
 
@@ -121,7 +121,7 @@ Returns a `blob`, a pdf containing the extracted page(s).
 
 * Input: Either a `blob` or a `document`. If a `document`, `xpath` is the field to use, `file:content` by default.
 * Output: `blob`, the pdf with the extracted pages
-* Parameter(s):
+* Parameters:
   * `xpath`: String, optional, used if input is `document`. `file:content` by default.
   * `pageRange`: String, required. Formated as in a print dialog, with pages starting at 1. For example:
     * '2-5' extracts page 2 to 5 (inclusive)
@@ -140,7 +140,7 @@ Returns a `blob`, a pdf containing the pdf without the page(s) removed.
 
 * Input: Either a `blob` or a `document`. If a `document`, `xpath` is the field to use, `file:content` by default.
 * Output: `blob`, the pdf with the page(s) removed
-* Parameter(s):
+* Parameters:
   * `xpath`: String, optional, used if input is `document`. `file:content` by default.
   * `pageRange`: String, required. Formated as in a print dialog, with pages starting at 1. For example:
     * '2-5' removes page 2 to 5 (inclusive)
@@ -156,7 +156,7 @@ Returns a `blob`, a pdf containing the pages having the new page order.
 
 * Input: Either a `blob` or a `document`. If a `document`, `xpath` is the field to use, `file:content` by default.
 * Output: `blob`, the pdf with the page(s) removed
-* Parameter(s):
+* Parameters:
   * `xpath`: String, optional, used if input is `document`. `file:content` by default.
   * `pageOrderJsonStr`: String, required. A JSON Array as string, with the number of the current pages, reorganized in the array. For example, `"[3,1,4,2]"` => moves page 3 to first, page 1 to second, etc.
     * It is possible to generate a new page order with less pages. For example, if the PDF has 10 pages, it is OK to pass "[3,1,4,2]", it will create a 4 pages PDF.
@@ -170,7 +170,7 @@ Returns a `blob`, a pdf containing the pages having the new page order.
   * Add to files:files,
   * Create a new document (a derivative)
     * With keeping the relation in a field?
-* Generating the thumbnails is not cached. So, displaying 3 times the same PDF makes Nuxeo calculate thumbnails 3 times. This could be optimized using one among different Nuxeo caches.
+* Generating the thumbnails or the preview is not cached. So, displaying 3 times the same PDF makes Nuxeo calculate thumbnails 3 times. This could be optimized using one among different Nuxeo caches.
 
 <br />
 
