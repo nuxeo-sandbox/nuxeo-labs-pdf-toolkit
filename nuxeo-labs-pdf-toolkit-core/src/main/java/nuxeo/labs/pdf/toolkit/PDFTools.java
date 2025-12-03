@@ -26,7 +26,6 @@ import java.util.TreeSet;
 
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang3.StringUtils;
-import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.impl.blob.FileBlob;
@@ -47,7 +46,7 @@ public class PDFTools {
     public static PDDocument cloneDocument(PDDocument original) throws IOException {
         ByteArrayOutputStream baos = new ByteArrayOutputStream();
         original.save(baos);
-        return Loader.loadPDF(baos.toByteArray());
+        return PDDocument.load(baos.toByteArray());
     }
 
     /**

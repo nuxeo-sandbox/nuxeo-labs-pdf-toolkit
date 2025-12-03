@@ -22,7 +22,6 @@ import java.io.IOException;
 import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
-import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.CloseableFile;
@@ -85,7 +84,7 @@ public class PDFPageRemover {
         }
 
         try (CloseableFile source = pdfBlob.getCloseableFile();
-                PDDocument document = Loader.loadPDF(source.getFile());
+                PDDocument document = PDDocument.load(source.getFile());
                 PDDocument reordered = PDFTools.cloneDocument(document)) {
             
             int pageCount = reordered.getNumberOfPages();

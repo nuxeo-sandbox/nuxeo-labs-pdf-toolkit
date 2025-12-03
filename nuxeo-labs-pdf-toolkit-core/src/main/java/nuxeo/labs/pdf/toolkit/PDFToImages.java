@@ -31,7 +31,6 @@ import java.util.Map;
 import javax.imageio.ImageIO;
 
 import org.apache.commons.lang3.StringUtils;
-import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
@@ -231,7 +230,7 @@ public class PDFToImages {
         // pdfBlob.getFile() could be null, like when the
         // related file is on S3 for example, we must download it.
         try (CloseableFile source = pdfBlob.getCloseableFile();
-                PDDocument document = Loader.loadPDF(source.getFile())) {
+                PDDocument document = PDDocument.load(source.getFile())) {
 
             PDFRenderer renderer = new PDFRenderer(document);
 
@@ -270,7 +269,7 @@ public class PDFToImages {
         // pdfBlob.getFile() could be null, like when the
         // related file is on S3 for example, we must download it.
         try (CloseableFile source = pdfBlob.getCloseableFile();
-                PDDocument document = Loader.loadPDF(source.getFile())) {
+                PDDocument document = PDDocument.load(source.getFile())) {
 
             int pageCount = document.getNumberOfPages();
             PDFTools.validatePageNumber(pageNum, pageCount, "" + pageNum);

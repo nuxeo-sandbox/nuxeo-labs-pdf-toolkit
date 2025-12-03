@@ -28,7 +28,6 @@ import java.util.HashMap;
 import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
-import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.json.JSONArray;
@@ -52,7 +51,7 @@ import org.nuxeo.runtime.test.runner.Deploy;
 import org.nuxeo.runtime.test.runner.Features;
 import org.nuxeo.runtime.test.runner.FeaturesRunner;
 
-import jakarta.inject.Inject;
+import javax.inject.Inject;
 import nuxeo.labs.pdf.toolkit.PDFToImages;
 import nuxeo.labs.pdf.toolkit.operations.PDFJpegimagePreviewOp;
 import nuxeo.labs.pdf.toolkit.operations.PDFPageExtractorOp;
@@ -95,7 +94,7 @@ public class TestOperations {
         String arrayStr = result.getString();
         JSONArray array = new JSONArray(arrayStr);
 
-        PDDocument sourcePdf = Loader.loadPDF(f);
+        PDDocument sourcePdf = PDDocument.load(f);
         int pageCount = sourcePdf.getNumberOfPages();
         assertEquals(array.length(), pageCount);
         
@@ -118,7 +117,7 @@ public class TestOperations {
         File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
         Blob b = new FileBlob(f);
 
-        PDDocument sourcePdf = Loader.loadPDF(f);
+        PDDocument sourcePdf = PDDocument.load(f);
 
         PDFTextStripper stripper = new PDFTextStripper();
         stripper.setSortByPosition(true);
@@ -134,7 +133,7 @@ public class TestOperations {
         Blob result = (Blob) automationService.run(ctx, PDFPageRemoverOp.ID, params);
         assertNotNull(result);
 
-        sourcePdf = Loader.loadPDF(result.getFile());
+        sourcePdf = PDDocument.load(result.getFile());
         int pageCount = sourcePdf.getNumberOfPages();
         assertEquals(pageCount, 6);
 
@@ -152,7 +151,7 @@ public class TestOperations {
         File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
         Blob b = new FileBlob(f);
 
-        PDDocument sourcePdf = Loader.loadPDF(f);
+        PDDocument sourcePdf = PDDocument.load(f);
         int originalPageCount = sourcePdf.getNumberOfPages();
         // assertEquals(10, originalPageCount);
 
@@ -171,12 +170,12 @@ public class TestOperations {
         assertNotNull(result);
 
         // Check original not modified
-        sourcePdf = Loader.loadPDF(f);
+        sourcePdf = PDDocument.load(f);
         int newPageCount = sourcePdf.getNumberOfPages();
         assertEquals(originalPageCount, newPageCount);
 
         // New PDF has 4 pages
-        PDDocument extractedPdf = Loader.loadPDF(result.getFile());
+        PDDocument extractedPdf = PDDocument.load(result.getFile());
         int pageCount = extractedPdf.getNumberOfPages();
         assertEquals(pageCount, 4);
 
@@ -194,7 +193,7 @@ public class TestOperations {
         File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
         Blob b = new FileBlob(f);
 
-        PDDocument sourcePdf = Loader.loadPDF(f);
+        PDDocument sourcePdf = PDDocument.load(f);
         int originalPageCount = sourcePdf.getNumberOfPages();
         // assertEquals(10, originalPageCount);
 
@@ -213,12 +212,12 @@ public class TestOperations {
         assertNotNull(result);
 
         // Check original not modified
-        sourcePdf = Loader.loadPDF(f);
+        sourcePdf = PDDocument.load(f);
         int newPageCount = sourcePdf.getNumberOfPages();
         assertEquals(originalPageCount, newPageCount);
 
         // New PDF has 10 pages
-        PDDocument reorganizedPdf = Loader.loadPDF(result.getFile());
+        PDDocument reorganizedPdf = PDDocument.load(result.getFile());
         int pageCount = reorganizedPdf.getNumberOfPages();
         assertEquals(pageCount, originalPageCount);
 

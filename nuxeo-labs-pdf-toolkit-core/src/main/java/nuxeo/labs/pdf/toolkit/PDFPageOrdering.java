@@ -23,7 +23,6 @@ import java.util.HashSet;
 import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
-import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.CloseableFile;
@@ -89,7 +88,7 @@ public class PDFPageOrdering {
         }
 
         try (CloseableFile source = pdfBlob.getCloseableFile();
-                PDDocument sourcePdf = Loader.loadPDF(source.getFile());
+                PDDocument sourcePdf = PDDocument.load(source.getFile());
                 PDDocument reordered = new PDDocument()) {
 
             int pageCount = sourcePdf.getNumberOfPages();
