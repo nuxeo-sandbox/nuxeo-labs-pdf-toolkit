@@ -1,12 +1,5 @@
 # nuxeo-labs-pdf-toolkit
 
-> [!WARNING]
-> This is **work in progress**. Using Github as a backup for now.
-> Do not use it now, please.
-
-
-## Manipulate PDFs from the UI
-
 The plugin displays a "PDF Toolkit" button for documents which have a `file:content` blob whose mime type is "application/pdf" (see below how to override this button). Clicking this button displays dialog with the thumbnails of the pages of a PDF.
 
 <img src="README-Medias/01-Dialog.png" alt="nuxeo-labs-pdf-toolkit" width="800">
