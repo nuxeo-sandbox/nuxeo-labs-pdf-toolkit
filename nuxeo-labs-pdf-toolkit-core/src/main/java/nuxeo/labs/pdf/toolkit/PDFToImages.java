@@ -54,11 +54,11 @@ import org.nuxeo.runtime.api.Framework;
  */
 public class PDFToImages {
 
-    public static int DEFAULT_THUMBNAIL_SIZE = 512;
+    public static final int DEFAULT_THUMBNAIL_SIZE = 512;
 
-    public static int DEFAULT_DPI = 512;
+    public static final int DEFAULT_DPI = 512;
     
-    public static int PREVIEW_PAGE_MAX_SIZE = 1024;
+    public static final int PREVIEW_PAGE_MAX_SIZE = 1024;
 
     protected int width = DEFAULT_THUMBNAIL_SIZE;
 
