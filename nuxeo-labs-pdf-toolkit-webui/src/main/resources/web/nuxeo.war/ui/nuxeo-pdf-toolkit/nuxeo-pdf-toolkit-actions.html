@@ -1,0 +1,382 @@
+<!--
+`nuxeo-pdf-toolkit-actions`
+Action buttons for PDF toolkit operations with destination selection dialog.
+-->
+<dom-module id="nuxeo-pdf-toolkit-actions">
+  <template>
+    <style include="nuxeo-styles nuxeo-action-button-styles">
+      :host {
+        display: block;
+      }
+
+      .action-buttons {
+        display: flex;
+        gap: 8px;
+      }
+
+      paper-button.primary {
+        background-color: var(--nuxeo-primary-color, #0066ff);
+        color: white;
+      }
+
+      paper-button.danger {
+        background-color: #d32f2f;
+        color: white;
+      }
+
+      paper-button[disabled] {
+        background-color: #e0e0e0;
+        color: #999;
+      }
+
+      #destinationDialog {
+        width: 500px;
+        max-width: 90%;
+      }
+
+      .destination-dialog-header {
+        padding: 16px 24px;
+        border-bottom: 1px solid #e0e0e0;
+        font-size: 18px;
+        font-weight: 500;
+      }
+
+      .destination-dialog-content {
+        padding: 24px;
+      }
+
+      .destination-option {
+        display: flex;
+        align-items: center;
+        padding: 12px;
+        margin-bottom: 8px;
+        border: 2px solid #e0e0e0;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: all 0.2s ease;
+      }
+
+      .destination-option:hover {
+        border-color: var(--nuxeo-primary-color, #0066ff);
+        background-color: #f0f7ff;
+      }
+
+      .destination-option.selected {
+        border-color: var(--nuxeo-primary-color, #0066ff);
+        background-color: #f0f7ff;
+      }
+
+      .destination-option iron-icon {
+        margin-right: 12px;
+        color: var(--nuxeo-primary-color, #0066ff);
+      }
+
+      .destination-option-content {
+        flex: 1;
+      }
+
+      .destination-option-title {
+        font-weight: 500;
+        margin-bottom: 4px;
+      }
+
+      .destination-option-description {
+        font-size: 12px;
+        color: #666;
+      }
+
+      .version-options {
+        margin-left: 36px;
+        margin-top: 8px;
+        display: none;
+      }
+
+      .version-options.visible {
+        display: block;
+      }
+
+      .version-option paper-radio-button {
+        margin-right: 8px;
+      }
+
+      .derivative-options {
+        margin-left: 36px;
+        margin-top: 8px;
+        display: none;
+      }
+
+      .derivative-options.visible {
+        display: block;
+      }
+
+      .derivative-option {
+        margin-bottom: 12px;
+      }
+
+      .derivative-option paper-input {
+        margin-top: 8px;
+      }
+
+      .destination-dialog-actions {
+        padding: 16px 24px;
+        border-top: 1px solid #e0e0e0;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+    </style>
+
+    <div class="action-buttons">
+      <paper-button id="extractPages" class="primary" on-tap="_onExtractClick" disabled="[[!hasSelection]]">
+        <iron-icon icon="icons:content-copy"></iron-icon>
+        [[i18n('pdftoolkit.label.extract')]]
+      </paper-button>
+      <paper-button id="removePages" class="danger" on-tap="_onRemoveClick" disabled="[[!hasSelection]]">
+        <iron-icon icon="icons:delete"></iron-icon>
+        [[i18n('pdftoolkit.label.remove')]]
+      </paper-button>
+      <paper-button id="reorderPages" class="primary" on-tap="_onReorderClick" disabled="[[!hasReordered]]">
+        <iron-icon icon="icons:save"></iron-icon>
+        [[i18n('pdftoolkit.label.reorg')]]
+      </paper-button>
+    </div>
+
+    <!-- Destination Selection Dialog -->
+    <paper-dialog id="destinationDialog" modal>
+      <div class="destination-dialog-header">
+        [[_destinationDialogTitle]]
+      </div>
+
+      <div class="destination-dialog-content">
+        <div class="destination-option" on-tap="_selectDestination" data-destination="download">
+          <iron-icon icon="icons:file-download"></iron-icon>
+          <div class="destination-option-content">
+            <div class="destination-option-title">[[i18n('pdftoolkit.destination.download')]]</div>
+            <div class="destination-option-description">[[i18n('pdftoolkit.destination.download.help')]]</div>
+          </div>
+        </div>
+
+        <div class="destination-option" on-tap="_selectDestination" data-destination="derivative">
+          <iron-icon icon="icons:description"></iron-icon>
+          <div class="destination-option-content">
+            <div class="destination-option-title">[[i18n('pdftoolkit.destination.derivative')]]</div>
+            <div class="destination-option-description">[[i18n('pdftoolkit.destination.derivative.help')]]</div>
+          </div>
+        </div>
+
+        <div id="derivativeOptions" class$="derivative-options [[_getDerivativeOptionsClass(_selectedDestination)]]">
+          <div class="derivative-option">
+            <paper-checkbox id="resetLifecycleState" checked="{{_resetLifeCycleState}}">[[i18n('pdftoolkit.destination.derivative.resetLifeCycle')]]</paper-checkbox>
+          </div>
+          <div class="derivative-option">
+            <paper-input id="derivativeTitle" 
+                         label="[[i18n('pdftoolkit.destination.derivative.title')]]" 
+                         value="{{_derivativeTitle}}" 
+                         placeholder="(optional)">
+            </paper-input>
+          </div>
+        </div>
+
+        <div class="destination-option" on-tap="_selectDestination" data-destination="attachments">
+          <iron-icon icon="icons:attachment"></iron-icon>
+          <div class="destination-option-content">
+            <div class="destination-option-title">[[i18n('pdftoolkit.destination.attachments')]]</div>
+            <div class="destination-option-description">[[i18n('pdftoolkit.destination.attachments.help')]]</div>
+          </div>
+        </div>
+
+        <div class="destination-option" on-tap="_selectDestination" data-destination="newFile">
+          <iron-icon icon="icons:save"></iron-icon>
+          <div class="destination-option-content">
+            <div class="destination-option-title">[[i18n('pdftoolkit.destination.newFile')]]</div>
+            <div class="destination-option-description">[[i18n('pdftoolkit.destination.newFile.help')]]</div>
+          </div>
+        </div>
+
+        <div id="versionOptions" class$="version-options [[_getVersionOptionsClass(_selectedDestination)]]">
+          <div class="destination-option-title" style="margin-bottom: 8px;">[[i18n('pdftoolkit.versioning.createVersion')]]</div>
+          <paper-checkbox id="createVersion" checked="{{_createVersion}}">[[i18n('pdftoolkit.versioning.createVersion.help')]]</paper-checkbox>
+          <template is="dom-if" if="[[_createVersion]]">
+            <paper-radio-group selected="{{_versionType}}">
+              <paper-radio-button name="minor">[[i18n('pdftoolkit.versioning.minor')]]</paper-radio-button>
+              <paper-radio-button name="major">[[i18n('pdftoolkit.versioning.major')]]</paper-radio-button>
+            </paper-radio-group>
+          </template>
+        </div>
+      </div>
+
+      <div class="destination-dialog-actions">
+        <paper-button on-tap="_cancelDestination">
+          <iron-icon icon="icons:close"></iron-icon>
+          [[i18n('pdftoolkit.label.close')]]
+        </paper-button>
+        <paper-button class="primary" on-tap="_confirmDestination" disabled="[[!_selectedDestination]]">
+          <iron-icon icon="icons:check"></iron-icon>
+          OK
+        </paper-button>
+      </div>
+    </paper-dialog>
+
+  </template>
+
+  <script>
+    Polymer({
+      is: 'nuxeo-pdf-toolkit-actions',
+      behaviors: [Nuxeo.I18nBehavior],
+
+      properties: {
+        document: {
+          type: Object
+        },
+
+        hasSelection: {
+          type: Boolean,
+          value: false
+        },
+
+        hasReordered: {
+          type: Boolean,
+          value: false
+        },
+
+        _currentAction: {
+          type: String,
+          value: null
+        },
+
+        _destinationDialogTitle: {
+          type: String,
+          value: ''
+        },
+
+        _selectedDestination: {
+          type: String,
+          value: null
+        },
+
+        _createVersion: {
+          type: Boolean,
+          value: false
+        },
+
+        _versionType: {
+          type: String,
+          value: 'minor'
+        },
+
+        _resetLifeCycleState: {
+          type: Boolean,
+          value: false
+        },
+
+        _derivativeTitle: {
+          type: String,
+          value: ''
+        }
+      },
+
+      _onExtractClick: function() {
+        this._currentAction = 'extract';
+        this._destinationDialogTitle = 'Extract Pages - Choose Destination';
+        this._showDestinationDialog();
+      },
+
+      _onRemoveClick: function() {
+        this._currentAction = 'remove';
+        this._destinationDialogTitle = 'Remove Pages - Choose Destination';
+        this._showDestinationDialog();
+      },
+
+      _onReorderClick: function() {
+        this._currentAction = 'reorder';
+        this._destinationDialogTitle = 'Reorder Pages - Choose Destination';
+        this._showDestinationDialog();
+      },
+
+      _showDestinationDialog: function() {
+        this._selectedDestination = null;
+        this._createVersion = false;
+        this._versionType = 'minor';
+        this._resetLifeCycleState = false;
+        this._derivativeTitle = '';
+        this._clearDestinationSelections();
+        this.$.destinationDialog.open();
+      },
+
+      _selectDestination: function(e) {
+        var destination = e.currentTarget.getAttribute('data-destination');
+        this._selectedDestination = destination;
+        this._updateDestinationSelections();
+      },
+
+      _clearDestinationSelections: function() {
+        var options = this.root.querySelectorAll('.destination-option');
+        options.forEach(function(option) {
+          option.classList.remove('selected');
+        });
+      },
+
+      _updateDestinationSelections: function() {
+        this._clearDestinationSelections();
+        var selectedOption = this.root.querySelector('.destination-option[data-destination="' + this._selectedDestination + '"]');
+        if (selectedOption) {
+          selectedOption.classList.add('selected');
+        }
+      },
+
+      _getVersionOptionsClass: function(destination) {
+        return destination === 'newFile' ? 'visible' : '';
+      },
+
+      _getDerivativeOptionsClass: function(destination) {
+        return destination === 'derivative' ? 'visible' : '';
+      },
+
+      _cancelDestination: function() {
+        this.$.destinationDialog.close();
+      },
+
+      _confirmDestination: function() {
+        if (!this._selectedDestination) {
+          return;
+        }
+
+        var destination = this._selectedDestination;
+        var action = this._currentAction;
+
+        // Close the destination dialog
+        this.$.destinationDialog.close();
+
+        // Execute the appropriate action based on destination
+        switch (destination) {
+          case 'download':
+            this.fire('action-complete', { action: action, destination: 'download' });
+            break;
+
+          case 'derivative':
+            this.fire('action-complete', { 
+              action: action, 
+              destination: 'derivative',
+              resetLifeCycleState: this._resetLifeCycleState,
+              derivativeTitle: this._derivativeTitle
+            });
+            break;
+
+          case 'attachments':
+            this.fire('action-complete', { action: action, destination: 'attachments' });
+            break;
+
+          case 'newFile':
+            this.fire('action-complete', { 
+              action: action, 
+              destination: 'newFile',
+              createVersion: this._createVersion,
+              versionType: this._versionType
+            });
+            break;
+        }
+      }
+        
+    });
+  </script>
+</dom-module>
