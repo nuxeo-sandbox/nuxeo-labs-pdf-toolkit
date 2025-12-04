@@ -6,4 +6,5 @@ Bundle-Version: 1.0.0
 Bundle-Name: nuxeo-labs-pdf-toolkit-core
 Bundle-ManifestVersion: 2
 Bundle-SymbolicName: nuxeo.labs.pdf.toolkit.nuxeo-labs-pdf-toolkit-core;singleton=true
-Nuxeo-Component: OSGI-INF/operations-contrib.xml
+Nuxeo-Component: OSGI-INF/operations-contrib.xml,
+  OSGI-INF/cache-contrib.xml

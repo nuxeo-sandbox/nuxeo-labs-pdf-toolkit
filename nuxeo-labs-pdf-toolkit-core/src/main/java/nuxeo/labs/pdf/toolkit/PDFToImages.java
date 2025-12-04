@@ -25,7 +25,9 @@ import java.io.File;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import javax.imageio.ImageIO;
@@ -44,7 +46,10 @@ import org.nuxeo.ecm.core.api.NuxeoException;
 import org.nuxeo.ecm.core.api.blobholder.BlobHolder;
 import org.nuxeo.ecm.core.api.blobholder.SimpleBlobHolder;
 import org.nuxeo.ecm.core.api.impl.blob.FileBlob;
+import org.nuxeo.ecm.core.blob.ManagedBlob;
 import org.nuxeo.ecm.core.convert.api.ConversionService;
+import org.nuxeo.ecm.core.transientstore.api.TransientStore;
+import org.nuxeo.ecm.core.transientstore.api.TransientStoreService;
 import org.nuxeo.ecm.platform.picture.api.ImagingConvertConstants;
 import org.nuxeo.runtime.api.Framework;
 
@@ -60,6 +65,8 @@ public class PDFToImages {
     public static final int DEFAULT_DPI = 512;
     
     public static final int PREVIEW_PAGE_MAX_SIZE = 1024;
+    
+    public static final String TRANSIENT_STORE_NAME = "PDFToolkitCache";
 
     protected int width = DEFAULT_THUMBNAIL_SIZE;
 
@@ -218,12 +225,50 @@ public class PDFToImages {
             throw new IllegalArgumentException("Malformed dimension string: " + size, e);
         }
     }
+    
+    protected static TransientStore getTransientStore() {
+        TransientStoreService transientStoreService = Framework.getService(TransientStoreService.class);
+        return transientStoreService.getStore(TRANSIENT_STORE_NAME);
+    }
+    
+    protected String getCacheKey() {
+        String key = pdfBlob.getDigest();
+        if(StringUtils.isNotBlank(key)) {
+            return key;
+        }
+        if(pdfBlob instanceof ManagedBlob) {
+            key = ((ManagedBlob) pdfBlob).getKey();
+        }
+        if(StringUtils.isNotBlank(key)) {
+            return key;
+        }
+        
+        String fileName = pdfBlob.getFilename();
+        long length = pdfBlob.getLength();
+        if(StringUtils.isNotBlank(fileName)) {
+            return fileName + length;
+        }
+        
+        // No digest, no key, no filename : what the hell is this blob? :-)
+        // (likely something from a unit test)
+        return null;
+        
+    }
 
     /**
      * Create thumbnails (PNG) for all pages of the given PDF.
      * Uses the width/height defined in previous calls, or default values.
      */
     public BlobList createThumbnails() {
+        
+        String cacheKey = getCacheKey();
+        TransientStore store = getTransientStore();
+        if(cacheKey != null) {
+            if(store.exists(cacheKey)) {
+                return new BlobList(store.getBlobs(cacheKey));
+            }
+            store.setCompleted(cacheKey, false);
+        }
 
         ImageIO.scanForPlugins();
         BlobList results = new BlobList();
@@ -247,11 +292,18 @@ public class PDFToImages {
 
                 results.add(resultBlob);
             }
+            if(cacheKey != null) {
+                store.putBlobs(cacheKey, results);
+            }
 
             return results;
 
         } catch (IOException e) {
             throw new NuxeoException("Failed to extract the pages", e);
+        } finally {
+            if(cacheKey != null) {
+                store.setCompleted(cacheKey, true);
+            }
         }
     }
 
@@ -264,6 +316,15 @@ public class PDFToImages {
      * @return
      */
     public Blob getJpegPreviewImage(int pageNum) {
+        
+        String cacheKey = getCacheKey();
+        TransientStore store = getTransientStore();
+        if(cacheKey != null) {
+            if(store.exists(cacheKey)) {
+                return store.getBlobs(cacheKey).get(0);
+            }
+            store.setCompleted(cacheKey, false);
+        }
 
         ImageIO.scanForPlugins();
 
@@ -295,11 +356,19 @@ public class PDFToImages {
             // Make sure to realign values
             resizedBlob.setMimeType("image/jpeg");
             resultBlob.setFilename(resultBlob.getFilename());
+            
+            if(cacheKey != null) {
+                store.putBlobs(cacheKey, Collections.singletonList(resultBlob));
+            }
 
             return resizedBlob;
 
         } catch (IOException e) {
             throw new NuxeoException("Failed to extract the page and make it a PNG.", e);
+        } finally {
+            if(cacheKey != null) {
+                store.setCompleted(cacheKey, true);
+            }
         }
 
     }
@@ -319,8 +388,6 @@ public class PDFToImages {
         FileBlob result = new FileBlob(resultFile);
         result.setFilename(fileNameNoExt + fileExtension);
         result.setMimeType(mimeType);
-
-        Framework.trackFile(resultFile, result);
 
         return result;
 

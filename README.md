@@ -56,6 +56,7 @@ To override it, copy the contribution and tune it, typically in your Studio proj
 </nuxeo-slot-content>
 ```
 
+<br />
 
 ### The Whole Dialog Itself
 
@@ -68,6 +69,11 @@ If you want to tune the dialog, you must import it in your Studio project, and i
 * Paste the whole content of the original file
 * Tune it as needed.
 
+<br />
+
+### Translation Keys
+
+The plugin provides UI in EN and FR thanks to translation keys. If you want the UI in a different language, you can add your own messages-{language}.json file (to you Studio Project > Designer > Translations, typically). The keys to use are [here](/nuxeo-labs-pdf-toolkit-webui/src/main/resources/web/nuxeo.war/ui/i18n).
 
 ## Operations
 

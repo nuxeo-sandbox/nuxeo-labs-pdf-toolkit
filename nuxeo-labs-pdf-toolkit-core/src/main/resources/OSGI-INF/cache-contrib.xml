@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<component name="nuxeo.labs.pdf.toolkit.cache">
+
+  <extension target="org.nuxeo.ecm.core.transientstore.TransientStorageComponent" point="store">
+    <store name="PDFToolkitCache">
+		<!-- Same values as the rendition cache -->
+      <firstLevelTTL>${nuxeo.transientstore.rendition.cache.ttl:=240}</firstLevelTTL>
+      <secondLevelTTL>${nuxeo.transientstore.rendition.cache.ttl2:=10}</secondLevelTTL>
+      <!-- Specific values. Our thumbnails are small, ~50k, 100M should be OK -->
+      <targetMaxSizeMB>100</targetMaxSizeMB>
+      <absoluteMaxSizeMB>110</absoluteMaxSizeMB>
+    </store>
+  </extension>
+</component>

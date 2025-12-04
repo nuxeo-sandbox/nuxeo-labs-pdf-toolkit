@@ -26,6 +26,7 @@ import java.io.File;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pdfbox.Loader;
@@ -107,8 +108,6 @@ public class TestOperations {
         assertEquals("jpeg", info.getFormat().toLowerCase());
         assertTrue(info.getHeight() <= PDFToImages.DEFAULT_THUMBNAIL_SIZE);
         assertTrue(info.getWidth() <= PDFToImages.DEFAULT_THUMBNAIL_SIZE);
-        
-
 
     }
 
