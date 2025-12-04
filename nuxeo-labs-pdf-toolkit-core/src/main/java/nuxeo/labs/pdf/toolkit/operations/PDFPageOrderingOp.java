@@ -28,6 +28,7 @@ import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
 
+import nuxeo.labs.pdf.toolkit.PDFDestinationHandler;
 import nuxeo.labs.pdf.toolkit.PDFPageOrdering;
 
 /**
@@ -37,7 +38,9 @@ import nuxeo.labs.pdf.toolkit.PDFPageOrdering;
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
         + " pageOrderJsonStr is a JSON array as string, required, with the number of current pages, reorganized in the array."
         + " For example, passing [3,1,4,2] => move page 3 to first, page 1 to second etc."
-        + " The number of pages can be less or equal to the original number of pages.")
+        + " The number of pages can be less or equal to the original number of pages."
+        + " destinationJsonStr is a JSON object telling the operation what to do with the pdf. Not passed => download."
+        + " See documentaiton for details.")
 public class PDFPageOrderingOp {
 
     public static final String ID = "PDFLabs.ReorderPages";
@@ -50,12 +53,18 @@ public class PDFPageOrderingOp {
 
     @Param(name = "pageOrderJsonStr", required = true)
     protected String pageOrderJsonStr;
+    
+    @Param(name="destinationJsonStr", required=false)
+    protected String destinationJsonStr;
+    
+    protected DocumentModel doc = null;
 
     @OperationMethod
     public Blob run(DocumentModel doc) {
 
         Blob b = (Blob) doc.getPropertyValue(xpath);
 
+        this.doc = doc;
         return run(b);
     }
 
@@ -72,8 +81,11 @@ public class PDFPageOrderingOp {
         }
 
         Blob resultPdf = pageOrdering.reorganizePdf(newPageOrder);
-
-        return resultPdf;
+        
+        PDFDestinationHandler destHandler = new PDFDestinationHandler(doc, resultPdf, destinationJsonStr);
+        Blob result = destHandler.run();
+        
+        return result;
 
     }
 }

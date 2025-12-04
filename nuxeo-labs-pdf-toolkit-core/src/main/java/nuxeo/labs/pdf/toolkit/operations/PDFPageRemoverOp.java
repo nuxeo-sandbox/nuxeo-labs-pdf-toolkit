@@ -27,6 +27,7 @@ import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
 
+import nuxeo.labs.pdf.toolkit.PDFDestinationHandler;
 import nuxeo.labs.pdf.toolkit.PDFPageRemover;
 
 /**
@@ -37,7 +38,9 @@ import nuxeo.labs.pdf.toolkit.PDFPageRemover;
 @Operation(id = PDFPageRemoverOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Remove Pages", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
         + " pageRange is a string, required, formated as when you display a print dialog, with pages starting at 1."
-        + " For example, '2-5' removes page 2 to 5 (inclusive). '2-5,8, 10-14' removes pages 2 to 5, 8 and 10 to 14.")
+        + " For example, '2-5' removes page 2 to 5 (inclusive). '2-5,8, 10-14' removes pages 2 to 5, 8 and 10 to 14."
+        + " destinationJsonStr is a JSON object telling the operation what to do with the pdf. Not passed => download."
+        + " See documentaiton for details.")
 public class PDFPageRemoverOp {
 
     public static final String ID = "PDFLabs.RemovePages";
@@ -50,12 +53,18 @@ public class PDFPageRemoverOp {
 
     @Param(name = "pageRange", required = true)
     protected String pageRange;
+    
+    @Param(name="destinationJsonStr", required=false)
+    protected String destinationJsonStr;
+    
+    protected DocumentModel doc = null;
 
     @OperationMethod
     public Blob run(DocumentModel doc) {
 
         Blob b = (Blob) doc.getPropertyValue(xpath);
 
+        this.doc = doc;
         return run(b);
     }
 
@@ -65,8 +74,11 @@ public class PDFPageRemoverOp {
         PDFPageRemover pageRemover = new PDFPageRemover(blob);
 
         Blob resultPdf = pageRemover.removePages(pageRange);
-
-        return resultPdf;
+        
+        PDFDestinationHandler destHandler = new PDFDestinationHandler(doc, resultPdf, destinationJsonStr);
+        Blob result = destHandler.run();
+        
+        return result;
 
     }
 }

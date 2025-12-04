@@ -59,13 +59,17 @@ import nuxeo.labs.pdf.toolkit.operations.PDFPageOrderingOp;
 import nuxeo.labs.pdf.toolkit.operations.PDFPageRemoverOp;
 import nuxeo.labs.pdf.toolkit.operations.PDFThumbnailsOp;
 
+/**
+ * This class test operaitions without using the destinationJsonStr parameter, which leads to "download" by default.
+ * 
+ */
 @RunWith(FeaturesRunner.class)
-@Features({AutomationFeature.class})
+@Features({ AutomationFeature.class })
 @RepositoryConfig(init = DefaultRepositoryInit.class, cleanup = Granularity.METHOD)
 @Deploy("org.nuxeo.ecm.platform.picture.core")
 @Deploy("org.nuxeo.ecm.core.convert")
 @Deploy("nuxeo.labs.pdf.toolkit.nuxeo-labs-pdf-toolkit-core")
-public class TestOperations {
+public class TestOperationsWithDownload {
 
     public static final String TEST_PDF_PAH = "lorem_ipsum_10_pages.pdf";
 
@@ -97,7 +101,7 @@ public class TestOperations {
         PDDocument sourcePdf = PDDocument.load(f);
         int pageCount = sourcePdf.getNumberOfPages();
         assertEquals(array.length(), pageCount);
-        
+
         // Check the first item
         String base64 = array.getString(0);
         byte[] bytes = Base64.getDecoder().decode(base64);
@@ -106,8 +110,6 @@ public class TestOperations {
         assertEquals("jpeg", info.getFormat().toLowerCase());
         assertTrue(info.getHeight() <= PDFToImages.DEFAULT_THUMBNAIL_SIZE);
         assertTrue(info.getWidth() <= PDFToImages.DEFAULT_THUMBNAIL_SIZE);
-        
-
 
     }
 
@@ -254,6 +256,6 @@ public class TestOperations {
         assertEquals("jpeg", info.getFormat().toLowerCase());
         assertTrue(info.getHeight() <= PDFToImages.PREVIEW_PAGE_MAX_SIZE);
         assertTrue(info.getWidth() <= PDFToImages.PREVIEW_PAGE_MAX_SIZE);
-        
+
     }
 }
