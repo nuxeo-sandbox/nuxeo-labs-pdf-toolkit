@@ -88,7 +88,7 @@ public class PDFDestinationHandler {
      *       versionType: minor|major, default minor (case insensitive)
      *     If derivative, details can be (optional)
      *       resetLifeCycle: true|false default false
-     *       copyTitle: the title of the copy, default is the title of the pdf
+     *       derivativeTitle: the title of the copy, default is the title of the pdf
      * }
      * </code>
      * </pre>
@@ -101,7 +101,7 @@ public class PDFDestinationHandler {
      *   "destination": "derivative",
      *   "details": {
      *     "resetLifeCycle": true,
-     *     "copyTitle": "My doc extracted pages"
+     *     "derivativeTitle": "My doc extracted pages"
      *   }
      * }
      * Save to file, no version created
@@ -205,7 +205,7 @@ public class PDFDestinationHandler {
                 options.add(CopyOption.RESET_LIFE_CYCLE);
             }
             // Try to find a name if it is not provided
-            String title = details.optString("copyTitle", null);
+            String title = details.optString("derivativeTitle", null);
             if (StringUtils.isBlank(title)) {
                 title = pdf.getFilename();
             }

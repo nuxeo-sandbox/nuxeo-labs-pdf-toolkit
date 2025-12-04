@@ -41,7 +41,7 @@ import nuxeo.labs.pdf.toolkit.PDFPageExtractor;
         + " For example, '2-5' extracts page 2 to 5 (inclusive). '2-5,8, 10-14' extracts pages 2 to 5, 8 and 10 to 14."
         + " Notice there also is a PDF.ExtractPages operation provided by the platform, which accepts only a start-end pages."
         + " destinationJsonStr is a JSON object telling the operation what to do with the pdf. Not passed => download."
-        + " See documentaiton for details.")
+        + " See documentation for details.")
 public class PDFPageExtractorOp {
 
     public static final String ID = "PDFLabs.ExtractPagesByRange";
