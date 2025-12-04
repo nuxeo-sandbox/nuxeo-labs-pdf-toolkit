@@ -4,6 +4,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
 -->
 <link rel="import" href="nuxeo-pdf-toolkit-thumbnails.html">
 <link rel="import" href="nuxeo-pdf-toolkit-preview.html">
+<link rel="import" href="nuxeo-pdf-toolkit-actions.html">
 <dom-module id="nuxeo-pdf-toolkit">
   <template>
     <style include="nuxeo-styles nuxeo-action-button-styles">
@@ -42,24 +43,34 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         margin-bottom: 5px;
       }
 
-      .action-buttons {
+
+      /* "running operation"" overlay styles */
+      .runningOperation-overlay {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(255, 255, 255, 0.9);
         display: flex;
-        gap: 8px;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
       }
 
-      paper-button.primary {
-        background-color: var(--nuxeo-primary-color, #0066ff);
-        color: white;
+      .runningOperation-message {
+        margin-top: 16px;
+        font-size: 14px;
+        color: var(--nuxeo-text-default, #666);
+        text-align: center;
       }
 
-      paper-button.danger {
-        background-color: #d32f2f;
-        color: white;
-      }
-
-      paper-button[disabled] {
-        background-color: #e0e0e0;
-        color: #999;
+      paper-spinner {
+        --paper-spinner-layer-1-color: var(--nuxeo-primary-color, #0066cc);
+        --paper-spinner-layer-2-color: var(--nuxeo-primary-color, #0066cc);
+        --paper-spinner-layer-3-color: var(--nuxeo-primary-color, #0066cc);
+        --paper-spinner-layer-4-color: var(--nuxeo-primary-color, #0066cc);
       }
     </style>
 
@@ -79,8 +90,16 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       <div class="dialog-header">
         [[document.title]]
       </div>
-
+      
       <div class="dialog-content">
+        <!-- Running operation indicator -->
+        <template is="dom-if" if="[[_runningOperation]]">
+          <div class="runningOperation-overlay">
+            <paper-spinner active></paper-spinner>
+            <div class="runningOperation-message">[[_getRunningOperationMessage()]]</div>
+          </div>
+        </template>
+
         <nuxeo-pdf-toolkit-thumbnails
           id="thumbnails"
           sources="[[thumbnailSources]]"
@@ -92,20 +111,12 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       </div>
 
       <div class="dialog-actions">
-        <div class="action-buttons">
-          <paper-button class="primary" on-tap="_extractPages" disabled="[[!_hasSelection]]">
-            <iron-icon icon="icons:content-copy"></iron-icon>
-            [[i18n('pdftoolkit.label.extract')]]
-          </paper-button>
-          <paper-button class="danger" on-tap="_removePages" disabled="[[!_hasSelection]]">
-            <iron-icon icon="icons:delete"></iron-icon>
-            [[i18n('pdftoolkit.label.remove')]]
-          </paper-button>
-          <paper-button class="primary" on-tap="_saveReorder" disabled="[[!_hasReordered]]">
-            <iron-icon icon="icons:save"></iron-icon>
-            [[i18n('pdftoolkit.label.reorg')]]
-          </paper-button>
-        </div>
+        <nuxeo-pdf-toolkit-actions
+          document="[[document]]"
+          has-selection="[[_hasSelection]]"
+          has-reordered="[[_hasReordered]]"
+          on-action-complete="_onActionComplete">
+        </nuxeo-pdf-toolkit-actions>
         <paper-button on-tap="_closeDialog">
           <iron-icon icon="icons:close"></iron-icon>
           [[i18n('pdftoolkit.label.close')]]
@@ -167,9 +178,28 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
           type: Number,
           value: null,
           notify: true
+        },
+
+        _runningOperation: {
+          type: Boolean,
+          value: false
+        },
+
+        _operationStartTime: {
+          type: Number,
+          value: 0
+        },
+
+        _hideOverlayTimer: {
+          type: Number,
+          value: 0
         }
+
       },
 
+      // ==============================================
+      // Lifecycle & dialog logic
+      // ==============================================
       _documentChanged: function() {
         this.set('thumbnailSources', []);
         if (this.$.thumbnails) {
@@ -177,6 +207,210 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         }
       },
 
+      _openDialog: function() {
+        if (!this.document) {
+          return;
+        }
+        this.$.dialog.open();
+        this._loadThumbnails();
+      },
+
+      _closeDialog: function() {
+        this.$.dialog.close();
+      },
+
+      // ==============================================
+      // UI events from children
+      // ==============================================
+      _onPagePreview: function(e) {
+        this.set('_previewPageNum', e.detail.pageNum);
+      },
+
+      _onActionComplete: function(e) {
+        /* Event fired from nuxeo-pdf-toolkit-actions when user confirms destination
+           The JSON sent is:
+            {
+              action: extract|remove|reorder,
+              destination: download|derivative|attachments|newFile,
+          // plus other params depending on destination:
+          // for 'newFile': createVersion (boolean), versionType (string)
+          // for derivative: resetLifeCycleState (boolean), derivativeTitle (string)
+          // . . .
+            }
+        */
+        var destinationObj = this._buildDestinationObject(e.detail);
+
+        switch (e.detail.action) {
+          case 'extract':
+            this._extractPages(destinationObj);
+            break;
+
+          case 'remove':
+            this._removePages(destinationObj);
+            break;
+
+          case 'reorder':
+            this._saveReorder(destinationObj);
+            break;
+
+          default:
+            console.error('Unknown action:', e.detail.action);
+        }
+      },
+
+      // ==============================================
+      // PDF operations
+      // ==============================================
+      _extractPages: function(destinationObj) {
+        var pageRange = this.$.thumbnails.getSelectedPageRanges();
+        if (!pageRange) {
+          return;
+        }
+
+        this._startRunningOperation();
+
+        this.$.extractOp.input = this.document;
+        this.$.extractOp.params = {
+          pageRange: pageRange,
+          destinationJsonStr: JSON.stringify(destinationObj)
+        };
+
+        this.$.extractOp.execute()
+          .then(function(response) {
+            this._handleResult(response, destinationObj.destination);
+          }.bind(this))
+          .catch(function(error) {
+            this._handleOperationError(error);
+          }.bind(this));
+      },
+
+      _removePages: function(destinationObj) {
+        var pageRange = this.$.thumbnails.getSelectedPageRanges();
+        if (!pageRange) {
+          return;
+        }
+
+        if(destinationObj.destination === 'newFile') {
+          if (!confirm(this.i18n('pdftoolkit.confirm.removePages'))) {
+            return;
+          }
+        }
+
+        this._startRunningOperation();
+
+        this.$.removePagesOp.input = this.document;
+        this.$.removePagesOp.params = {
+          pageRange: pageRange,
+          destinationJsonStr: JSON.stringify(destinationObj)
+        };
+
+        this.$.removePagesOp.execute()
+            .then(function(response) {
+            this._handleResult(response, destinationObj.destination);
+          }.bind(this))
+          .catch(function(error) {
+            this._handleOperationError(error);
+          }.bind(this));
+      },
+
+      _saveReorder: function(destinationObj) {
+        var newOrder = this.$.thumbnails.getNewPageOrder();
+        if (!newOrder || !newOrder.length) {
+          return;
+        }
+
+        this._startRunningOperation();
+
+        this.$.reorderOp.input = this.document;
+        this.$.reorderOp.params = {
+          pageOrderJsonStr: JSON.stringify(newOrder)
+        };
+
+        this.$.reorderOp.execute()
+          .then(function(response) {
+            this._handleResult(response, destinationObj.destination);
+          }.bind(this))
+          .catch(function(error) {
+            this._handleOperationError(error);
+          }.bind(this));
+      },
+
+      // ==============================================
+      // "Running operation" overlay
+      // ==============================================
+      _startRunningOperation: function() {
+        // Cancel any pending hide
+        if (this._hideOverlayTimer) {
+          clearTimeout(this._hideOverlayTimer);
+          this._hideOverlayTimer = 0;
+        }
+        this._operationStartTime = Date.now();
+        this.set('_runningOperation', true);
+      },
+
+      _finishRunningOperation: function(callback) {
+        var self = this;
+
+        // If nothing is running, just call the callback immediately
+        if (!this._runningOperation) {
+          if (callback) {
+            callback.call(this);
+          }
+          return;
+        }
+
+        var MIN_DURATION = 2000; // 2 seconds
+        var now = Date.now();
+        var start = this._operationStartTime || now;
+        var elapsed = now - start;
+        var remaining = MIN_DURATION - elapsed;
+
+        var done = function() {
+          self.set('_runningOperation', false);
+          self._operationStartTime = 0;
+          self._hideOverlayTimer = 0;
+          if (callback) {
+            callback.call(self);
+          }
+        };
+
+        if (remaining > 0) {
+          this._hideOverlayTimer = setTimeout(done, remaining);
+        } else {
+          done();
+        }
+      },
+
+      _handleOperationError: function(error) {
+        console.error(error);
+        alert('An error occured: ' + error);
+        // Hide overlay, but keep the dialog open so the user can try again
+        this._finishRunningOperation();
+      },
+
+      _handleResult: function(operationResponse, destination) {
+        switch (destination) {
+          case 'derivative':
+          case 'attachments':
+          case 'newFile':
+            // we could navigate to the new doc here if needed
+            break;
+
+          case 'download':
+            this._downloadBlob(operationResponse);
+            break;
+        }
+
+        // We are done with the whole dialog.
+        // Ensure overlay stays at least 2 seconds, then close.
+        this._finishRunningOperation(function() {
+          this._closeDialog();
+        }.bind(this));
+      },
+
+      // ==============================================
+      // Helpers
+      // ==============================================
       _loadThumbnails: function() {
         this.set('loading', true);
 
@@ -195,84 +429,36 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
             this.set('loading', false);
           }.bind(this))
           .catch(function(error) {
+            console.error('Failed to load thumbnails', error);
             this.set('loading', false);
           }.bind(this));
       },
 
-      _openDialog: function() {
-        if (!this.document) {
-          return;
-        }
-        this.$.dialog.open();
-        this._loadThumbnails();
-      },
-
-      _closeDialog: function() {
-        this.$.dialog.close();
-      },
-
-      _onPagePreview: function(e) {
-        this.set('_previewPageNum', e.detail.pageNum);
-      },
-
-      _extractPages: function() {
-        var pageRange = this.$.thumbnails.getSelectedPageRanges();
-        if (!pageRange) {
-          return;
-        }
-
-        this.$.extractOp.input = this.document;
-        this.$.extractOp.params = { pageRange: pageRange };
-
-        this.$.extractOp.execute()
-          .then(function(response) {
-            this._downloadBlob(response);
-          }.bind(this))
-          .catch(function(error) {
-            alert('An error occured: ' + error);
-          }.bind(this));
-      },
-
-      _removePages: function() {
-        var pageRange = this.$.thumbnails.getSelectedPageRanges();
-        if (!pageRange) {
-          return;
-        }
-
-        if (!confirm('Are you sure you want to remove the selected pages?')) {
-          return;
-        }
-
-        this.$.removePagesOp.input = this.document;
-        this.$.removePagesOp.params = { pageRange: pageRange };
-
-        this.$.removePagesOp.execute()
-          .then(function(response) {
-            this._downloadBlob(response);
-          }.bind(this))
-          .catch(function(error) {
-            alert('An error occured: ' + error);
-          }.bind(this));
-      },
-
-      _saveReorder: function() {
-        var newOrder = this.$.thumbnails.getNewPageOrder();
-        if (!newOrder || !newOrder.length) {
-          return;
-        }
-
-        this.$.reorderOp.input = this.document;
-        this.$.reorderOp.params = {
-          pageOrderJsonStr: JSON.stringify(newOrder)
+      // This functiuon prepares the object to send to the operation(s)
+      _buildDestinationObject: function(detail) {
+        var destinationObj = {
+          destination: detail.destination
         };
 
-        this.$.reorderOp.execute()
-          .then(function(response) {
-            this._downloadBlob(response);
-          }.bind(this))
-          .catch(function(error) {
-            alert('An error occured: ' + error);
-          }.bind(this));
+        switch (detail.destination) {
+          case 'newFile':
+            destinationObj.details = {
+              createVersion: detail.createVersion
+            }
+            if(destinationObj.details.createVersion) {
+              destinationObj.details.versionType = detail.versionType;
+            }
+            break;
+
+          case 'derivative':
+            destinationObj.details = {
+              resetLifeCycleState: detail.resetLifeCycleState,
+              derivativeTitle: detail.derivativeTitle
+            }
+            break;
+        }
+
+        return destinationObj;
       },
 
       _downloadBlob: function(operationResult) {
