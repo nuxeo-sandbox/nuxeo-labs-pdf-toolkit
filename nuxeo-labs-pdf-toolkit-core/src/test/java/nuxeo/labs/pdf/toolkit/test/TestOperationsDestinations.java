@@ -188,7 +188,7 @@ public class TestOperationsDestinations {
         destinationObj.put("destination", "derivative");
         JSONObject details = new JSONObject();
         details.put("resetLifeCycle", true);
-        details.put("copyTitle", "THE COPY");
+        details.put("derivativeTitle", "THE COPY");
         destinationObj.put("details",  details);
         params.put("destinationJsonStr", destinationObj.toString());
 
