@@ -27,6 +27,7 @@ import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
 
+import nuxeo.labs.pdf.toolkit.PDFDestinationHandler;
 import nuxeo.labs.pdf.toolkit.PDFPageExtractor;
 
 /**
@@ -38,7 +39,9 @@ import nuxeo.labs.pdf.toolkit.PDFPageExtractor;
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
         + " pageRange is a string, required, formated as when you display a print dialog, with pages starting at 1."
         + " For example, '2-5' extracts page 2 to 5 (inclusive). '2-5,8, 10-14' extracts pages 2 to 5, 8 and 10 to 14."
-        + " Notice there also is a PDF.ExtractPages operation provided by the platform, which accepts only a start-end pages.")
+        + " Notice there also is a PDF.ExtractPages operation provided by the platform, which accepts only a start-end pages."
+        + " destinationJsonStr is a JSON object telling the operation what to do with the pdf. Not passed => download."
+        + " See documentaiton for details.")
 public class PDFPageExtractorOp {
 
     public static final String ID = "PDFLabs.ExtractPagesByRange";
@@ -51,12 +54,18 @@ public class PDFPageExtractorOp {
 
     @Param(name = "pageRange", required = true)
     protected String pageRange;
+    
+    @Param(name="destinationJsonStr", required=false)
+    protected String destinationJsonStr;
+    
+    protected DocumentModel doc = null;
 
     @OperationMethod
     public Blob run(DocumentModel doc) {
 
         Blob b = (Blob) doc.getPropertyValue(xpath);
 
+        this.doc = doc;
         return run(b);
     }
 
@@ -66,8 +75,11 @@ public class PDFPageExtractorOp {
         PDFPageExtractor pageExtractor = new PDFPageExtractor(blob);
 
         Blob resultPdf = pageExtractor.extractPages(pageRange);
-
-        return resultPdf;
+        
+        PDFDestinationHandler destHandler = new PDFDestinationHandler(doc, resultPdf, destinationJsonStr);
+        Blob result = destHandler.run();
+        
+        return result;
 
     }
 }
