@@ -32,7 +32,7 @@ import nuxeo.labs.pdf.toolkit.PDFDestinationHandler;
 import nuxeo.labs.pdf.toolkit.PDFPageOrdering;
 
 /**
- * @since TODO
+ * An operation that reorder pages in a PDF.
  */
 @Operation(id = PDFPageOrderingOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Reorder Pages", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."

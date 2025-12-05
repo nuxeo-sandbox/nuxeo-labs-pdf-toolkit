@@ -89,6 +89,9 @@ public class PDFDestinationHandler {
      *     If derivative, details can be (optional)
      *       resetLifeCycle: true|false default false
      *       derivativeTitle: the title of the copy, default is the title of the pdf
+     *     If "attachments", details can be:
+     *       xpath: the blob list field to use
+     *       If not passed, "files:files" is used
      * }
      * </code>
      * </pre>
@@ -119,7 +122,6 @@ public class PDFDestinationHandler {
      *   "createVersion": true,
      *   "versionType": "major"
      * }
-    
      * </code>
      * </pre>
      * 
@@ -156,11 +158,11 @@ public class PDFDestinationHandler {
     /**
      * Run the action and returns a Blob:
      * - Either a file blob (to download from the browser)
-     * - Or a JSON blob. The content depends on the destination (see contructir for info on destination/details)
+     * - Or a JSON blob. The content depends on the destination (see contructor for info on destination/details)
      * <ul>
      * <li>"download", returns the pdf as is</li>
      * <li>"derivative", return a JSON:<\br>
-     * <code>{"status": "done", "derivativeId": the UUID of the copy}</code></li>
+     * <code>{"status": "done", "derivativeId": the UUID of the derivative}</code></li>
      * <li>attachments, return a JSON, <code>{"status": "done"}</code></li>
      * <li>newFile, return a JSON, <code>{"status": "done"}</code></li>
      * </ul>
@@ -245,7 +247,7 @@ public class PDFDestinationHandler {
             return Blobs.createJSONBlob("{\"status\": \"done\"}");
 
         default:
-            throw new IllegalArgumentException("Ivalid destination");
+            throw new IllegalArgumentException("Invalid destination");
         }
 
     }

@@ -32,7 +32,7 @@ import org.nuxeo.ecm.core.api.NuxeoException;
  * Extract pages from a PDF.
  * 
  * We cannot use the platform org.nuxeo.ecm.platform.pdf.PDFPageExtractor, since it extracts only a page
- * range with start-to. We want something more complex
+ * range with start-to. We want something more complex.
  */
 public class PDFPageExtractor {
 
