@@ -160,7 +160,7 @@ public class PDFDestinationHandler {
      * <ul>
      * <li>"download", returns the pdf as is</li>
      * <li>"derivative", return a JSON:<\br>
-     * <code>{"status": "done", "copyId": the UUID of the copy}</code></li>
+     * <code>{"status": "done", "derivativeId": the UUID of the copy}</code></li>
      * <li>attachments, return a JSON, <code>{"status": "done"}</code></li>
      * <li>newFile, return a JSON, <code>{"status": "done"}</code></li>
      * </ul>
@@ -219,7 +219,7 @@ public class PDFDestinationHandler {
             // doc uid etc
             JSONObject result = new JSONObject();
             result.put("status", "done");
-            result.put("copyId", copy.getId());
+            result.put("derivativeId", copy.getId());
             return Blobs.createJSONBlob(result.toString());
 
         case NEW_FILE:
