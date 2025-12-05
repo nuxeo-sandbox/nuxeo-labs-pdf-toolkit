@@ -211,6 +211,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
 
       _closeDialog: function() {
         this.$.dialog.close();
+        this.fire('document-updated');
       },
 
       // ==============================================
@@ -228,7 +229,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
               destination: download|derivative|attachments|newFile,
           // plus other params depending on destination:
           // for 'newFile': createVersion (boolean), versionType (string)
-          // for derivative: resetLifeCycleState (boolean), derivativeTitle (string)
+          // for derivative: resetLifeCycle (boolean), derivativeTitle (string)
           // . . .
             }
         */
@@ -317,7 +318,8 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
 
         this.$.reorderOp.input = this.document;
         this.$.reorderOp.params = {
-          pageOrderJsonStr: JSON.stringify(newOrder)
+          pageOrderJsonStr: JSON.stringify(newOrder),
+          destinationJsonStr: JSON.stringify(destinationObj)
         };
 
         this.$.reorderOp.execute()
@@ -446,7 +448,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
 
           case 'derivative':
             destinationObj.details = {
-              resetLifeCycleState: detail.resetLifeCycleState,
+              resetLifeCycle: detail.resetLifeCycle,
               derivativeTitle: detail.derivativeTitle
             }
             break;
