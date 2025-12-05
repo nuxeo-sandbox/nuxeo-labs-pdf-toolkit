@@ -114,13 +114,17 @@ public class PDFDestinationHandler {
      * Save to file, create minor version
      * {
      *   "destination": "newFile",
-     *   "createVersion": true
+     *   "details": {
+     *     "createVersion": true
+     *   }
      * }
      * Save to file, create major version
      * {
      *   "destination": "newFile",
-     *   "createVersion": true,
-     *   "versionType": "major"
+     *   "details": {
+     *     "createVersion": true,
+     *     "versionType": "major"
+     *   }
      * }
      * </code>
      * </pre>
