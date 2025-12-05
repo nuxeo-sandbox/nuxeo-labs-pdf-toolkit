@@ -33,17 +33,17 @@ import org.nuxeo.ecm.core.api.DocumentModel;
 import nuxeo.labs.pdf.toolkit.PDFToImages;
 
 /**
- * We could use the native operation, getPagesAsImages, but it returns images with a 300 DPI and they are
- * at the size of the pagen which can be big.
- * => We would have to then use a converter to reduce the size.
- * We do calculate the images and convert to thumbnail in the same call.
+ * An operation that returns a list of jpeg images as base64.
+ * <br>
+ * There already is a PDF.ConvertToPictures operation, but it returns images with a 300 DPI and they are at the
+ * dimension of each page which can sometime be big.
  */
 @Operation(id = PDFThumbnailsOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Get Thumbnails", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
         + " Calculate thumbnails of each page of the input PDF."
         + " Returns a JSON Array (as string) of the ordered thumbnails, jpeg, as base64."
-        + " The operation accepts maxWidth (default 512), maxHeight (defailt 512) and dpi (default 150) as optional parameters."
-        + " Warning: as all is in memory as base64, don't use big images and high dpi.")
+        + " The operation accepts maxWidth (default 512), maxHeight (default 512) and dpi (default 150) as optional parameters."
+        + " Warning: as all is in memory as base64, don't use big images and/or high dpi.")
 public class PDFThumbnailsOp {
 
     public static final String ID = "PDFLabs.GetThumbnails";
