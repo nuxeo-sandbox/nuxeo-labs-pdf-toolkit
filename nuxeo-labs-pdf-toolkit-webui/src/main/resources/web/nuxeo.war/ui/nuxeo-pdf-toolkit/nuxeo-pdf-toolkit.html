@@ -124,7 +124,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       </div>
     </paper-dialog>
     
-    <nuxeo-pdf-toolkit-preview id="preview" document="[[document]]" page="[[_previewPageNum]]"></nuxeo-pdf-toolkit-preview>
+    <nuxeo-pdf-toolkit-preview id="preview"></nuxeo-pdf-toolkit-preview>
 
   </template>
 
@@ -174,12 +174,6 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
           value: false
         },
 
-        _previewPageNum: {
-          type: Number,
-          value: null,
-          notify: true
-        },
-
         _runningOperation: {
           type: Boolean,
           value: false
@@ -223,7 +217,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       // UI events from children
       // ==============================================
       _onPagePreview: function(e) {
-        this.set('_previewPageNum', e.detail.pageNum);
+        this.$.preview.loadPreviewPage(this.document, e.detail.pageNum);
       },
 
       _onActionComplete: function(e) {
