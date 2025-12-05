@@ -32,7 +32,7 @@ import nuxeo.labs.pdf.toolkit.PDFDestinationHandler;
 import nuxeo.labs.pdf.toolkit.PDFPageOrdering;
 
 /**
- * @since TODO
+ * An operation that reorder pages in a PDF.
  */
 @Operation(id = PDFPageOrderingOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Reorder Pages", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
@@ -40,7 +40,7 @@ import nuxeo.labs.pdf.toolkit.PDFPageOrdering;
         + " For example, passing [3,1,4,2] => move page 3 to first, page 1 to second etc."
         + " The number of pages can be less or equal to the original number of pages."
         + " destinationJsonStr is a JSON object telling the operation what to do with the pdf. Not passed => download."
-        + " See documentaiton for details.")
+        + " See documentation for details.")
 public class PDFPageOrderingOp {
 
     public static final String ID = "PDFLabs.ReorderPages";

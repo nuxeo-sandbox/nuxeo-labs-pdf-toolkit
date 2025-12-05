@@ -35,11 +35,12 @@ import org.nuxeo.ecm.core.api.NuxeoException;
 import nuxeo.labs.pdf.toolkit.PDFToImages;
 
 /**
- * @since TODO
+ * An operation that return the jpeg preview of a page.
  */
 @Operation(id = PDFJpegimagePreviewOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Jpeg Image Preview", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
-        + " pageNumber is an integer, starting at 1. Result jpeg is max 1024x1024, dpi 300")
+        + " pageNumber is an integer, starting at 1. Result jpeg is max 1024x1024, dpi 300."
+        + " asBase64 is boolean, optional. If true, returns a text/plain blob with the base64")
 public class PDFJpegimagePreviewOp {
 
     public static final String ID = "PDFLabs.JpegImagePreview";

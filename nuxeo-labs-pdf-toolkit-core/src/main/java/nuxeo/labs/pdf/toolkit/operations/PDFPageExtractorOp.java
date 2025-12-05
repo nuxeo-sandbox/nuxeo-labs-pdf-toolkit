@@ -31,9 +31,7 @@ import nuxeo.labs.pdf.toolkit.PDFDestinationHandler;
 import nuxeo.labs.pdf.toolkit.PDFPageExtractor;
 
 /**
- * 
- * 
- * @since TODO
+ * An operation that extract pages from a PDF.
  */
 @Operation(id = PDFPageExtractorOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Extract Pages by Range", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
