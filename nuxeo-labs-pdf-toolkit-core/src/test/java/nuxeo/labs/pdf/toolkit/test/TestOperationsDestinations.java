@@ -158,11 +158,11 @@ public class TestOperationsDestinations {
         assertTrue(resultJson.has("status"));
         assertEquals("done", resultJson.getString("status"));
 
-        assertTrue(resultJson.has("copyId"));
-        String copyId = resultJson.getString("copyId");
-        assertTrue(StringUtils.isNotBlank(copyId));
+        assertTrue(resultJson.has("derivativeId"));
+        String derivativeId = resultJson.getString("derivativeId");
+        assertTrue(StringUtils.isNotBlank(derivativeId));
 
-        DocumentModel copy = session.getDocument(new IdRef(copyId));
+        DocumentModel copy = session.getDocument(new IdRef(derivativeId));
         Blob pdf = (Blob) copy.getPropertyValue("file:content");
         checkNumberOfPages(pdf, 4);
         
@@ -202,11 +202,11 @@ public class TestOperationsDestinations {
         assertTrue(resultJson.has("status"));
         assertEquals("done", resultJson.getString("status"));
 
-        assertTrue(resultJson.has("copyId"));
-        String copyId = resultJson.getString("copyId");
-        assertTrue(StringUtils.isNotBlank(copyId));
+        assertTrue(resultJson.has("derivativeId"));
+        String derivativeId = resultJson.getString("derivativeId");
+        assertTrue(StringUtils.isNotBlank(derivativeId));
 
-        DocumentModel copy = session.getDocument(new IdRef(copyId));
+        DocumentModel copy = session.getDocument(new IdRef(derivativeId));
         Blob pdf = (Blob) copy.getPropertyValue("file:content");
         checkNumberOfPages(pdf, 4);
         
