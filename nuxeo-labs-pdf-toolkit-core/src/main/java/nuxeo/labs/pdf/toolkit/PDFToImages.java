@@ -230,22 +230,26 @@ public class PDFToImages {
         return transientStoreService.getStore(TRANSIENT_STORE_NAME);
     }
     
-    protected String getCacheKey() {
+    // Returns a key that can be used either by the list of thumbnails (pageNum null) or by a preview.
+    protected String getCacheKey(Integer pageNum) {
+        
+        String pageNumSuffix = "-" + ((pageNum != null) ? pageNum : 0);
+        
         String key = pdfBlob.getDigest();
         if(StringUtils.isNotBlank(key)) {
-            return key;
+            return key + pageNumSuffix;
         }
         if(pdfBlob instanceof ManagedBlob) {
             key = ((ManagedBlob) pdfBlob).getKey();
         }
         if(StringUtils.isNotBlank(key)) {
-            return key;
+            return key + pageNumSuffix;
         }
         
         String fileName = pdfBlob.getFilename();
         long length = pdfBlob.getLength();
         if(StringUtils.isNotBlank(fileName)) {
-            return fileName + length;
+            return fileName + "-" + length + pageNumSuffix;
         }
         
         // No digest, no key, no filename : what the hell is this blob? :-)
@@ -260,7 +264,7 @@ public class PDFToImages {
      */
     public BlobList createThumbnails() {
         
-        String cacheKey = getCacheKey();
+        String cacheKey = getCacheKey(null);
         TransientStore store = getTransientStore();
         if(cacheKey != null) {
             if(store.exists(cacheKey)) {
@@ -316,7 +320,7 @@ public class PDFToImages {
      */
     public Blob getJpegPreviewImage(int pageNum) {
         
-        String cacheKey = getCacheKey();
+        String cacheKey = getCacheKey(pageNum);
         TransientStore store = getTransientStore();
         if(cacheKey != null) {
             if(store.exists(cacheKey)) {
