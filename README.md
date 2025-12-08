@@ -1,21 +1,21 @@
 # nuxeo-labs-pdf-toolkit
 
-The plugin displays a "PDF Toolkit" button for documents which have a `file:content` blob whose mime type is "application/pdf" (see below how to override this button). Clicking this button displays dialog with the thumbnails of the pages of a PDF.
+The plugin (for Nuxeo LTS 2025  nand 2023) displays a "PDF Toolkit" button for documents which have a `file:content` blob whose mime type is "application/pdf" (see below how to override this button). Clicking this button displays a dialog with the thumbnails of the pages of the PDF.
 
 <img src="README-Medias/01-Dialog.png" alt="nuxeo-labs-pdf-toolkit" width="800">
 
-Users can:
+Users can then...
 
 * Select 1-N pages (with command/ctrl-clic and shift-click)
 * Reorganize pages by drag-drop
 
-Users can then:
+...and:
 
 * Extract selected page(s)
 * Remove selected page(s)
 * Generate pdf with the new page order
 
-When they click one of these buttons, a "Destination" dialog is displayed, allowing to choose what to do with the resulting PDF:
+When they click one of these buttons, a "Destination" dialog iallows for choosing what to do with the resulting PDF:
 
 <img src="README-Medias/02-Destination.png" alt="nuxeo-labs-pdf-toolkit" width="600">
 
@@ -242,6 +242,16 @@ Save to file, create minor version:
 
 <br />
 
+## Installation
+
+The plugin is available on [Nuxeo MarketPlace](https://connect.nuxeo.com/nuxeo/site/marketplace/package/nuxeo-labs-pdf-toolkit), for LTS 2025 and LTS 2023. So you can
+
+* Add it to `NUXEO_PACKAGES` in your Docker toolling
+* Or use `nuxeoctl mp-install nuxeo-labs-pdf-toolkit`
+* Or download the package and install it manually: `nuxeoctl mp-install nuxeo-labs-pdf-toolkit-{plugin version}`
+
+<br />
+
 ## How to build
 ```bash
 git clone https://github.com/nuxeo-sandbox/nuxeo-labs-pdf-toolkit
@@ -259,12 +269,6 @@ resources.
 
 This is a moving project (no API maintenance, no deprecation process, etc.) If any of these solutions are found to be
 useful for the Nuxeo Platform in general, they will be integrated directly into platform, not maintained here.
-
-<br />
-
-## Nuxeo Marketplace
-NOT THERE YET
-[here](https://connect.nuxeo.com/nuxeo/site/marketplace/package/nuxeo-labs-pdf-toolkit)
 
 <br />
 

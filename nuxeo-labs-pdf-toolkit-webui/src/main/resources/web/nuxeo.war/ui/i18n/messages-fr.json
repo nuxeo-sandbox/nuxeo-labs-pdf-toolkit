@@ -10,6 +10,7 @@
   "pdftoolkit.destination.derivative.help": "Créer une copie du document avec le nouveau PDF",
   "pdftoolkit.destination.derivative.resetLifeCycle": "Réinitialiser l'état du cycle de vie",
   "pdftoolkit.destination.derivative.title": "Titre de la copie",
+  "pdftoolkit.destination.derivative.title.placeholder": "(optionnel)",
   "pdftoolkit.destination.attachments": "Fichiers complémentaires",
   "pdftoolkit.destination.attachments.help": "Ajouter le PDF modifié aux fichiers complémentaires",
   "pdftoolkit.destination.newFile": "Remplacement du fichier",

@@ -10,6 +10,7 @@
   "pdftoolkit.destination.derivative.help": "Create a derivative of the original document",
   "pdftoolkit.destination.derivative.resetLifeCycle": "Reset lifecycle state",
   "pdftoolkit.destination.derivative.title": "Title of the copy",
+  "pdftoolkit.destination.derivative.title.placeholder": "(optional)",
   "pdftoolkit.destination.attachments": "Attachments",
   "pdftoolkit.destination.attachments.help": "Add the modified PDF to document attachments",
   "pdftoolkit.destination.newFile": "Replace file",
