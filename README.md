@@ -246,6 +246,7 @@ Save to file, create minor version:
 
 The plugin is available on [Nuxeo MarketPlace](https://connect.nuxeo.com/nuxeo/site/marketplace/package/nuxeo-labs-pdf-toolkit), for LTS 2025 and LTS 2023. So you can
 
+* Add it as a dependency of your Nuxeo Studio project (Modeler > Settings > Application Definition)
 * Add it to `NUXEO_PACKAGES` in your Docker toolling
 * Or use `nuxeoctl mp-install nuxeo-labs-pdf-toolkit`
 * Or download the package and install it manually: `nuxeoctl mp-install nuxeo-labs-pdf-toolkit-{plugin version}`
