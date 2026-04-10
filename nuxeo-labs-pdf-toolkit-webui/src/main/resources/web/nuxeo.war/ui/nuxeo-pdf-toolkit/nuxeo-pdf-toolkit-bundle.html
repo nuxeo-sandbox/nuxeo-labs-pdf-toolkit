@@ -20,7 +20,7 @@ limitations under the License.
 <!-- Contribution of element 'nuxeo-pdf-toolkit' for slot 'BLOB_ACTIONS' -->
 <nuxeo-slot-content name="pdfToolkit" slot="DOCUMENT_ACTIONS" order="1">
   <template>
-    <nuxeo-filter document="[[document]]" expression="document.properties[&quot;file:content&quot;] !&#x3D;&#x3D; null &amp;&amp; document.properties[&quot;file:content&quot;][&quot;mime-type&quot;] &#x3D;&#x3D;&#x3D; &quot;application/pdf&quot;" user="[[user]]">
+    <nuxeo-filter document="[[document]]" expression="document &amp;&amp; document.properties &amp;&amp; document.properties[&quot;file:content&quot;] &amp;&amp; document.properties[&quot;file:content&quot;][&quot;mime-type&quot;] &#x3D;&#x3D;&#x3D; &quot;application/pdf&quot;" user="[[user]]">
       <template>
         <nuxeo-pdf-toolkit document="[[document]]"></nuxeo-pdf-toolkit>
       </template>
