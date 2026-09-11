@@ -50,14 +50,25 @@ To override it, copy the contribution and tune it, typically in your Studio proj
 * To disable it:
 
 ```html
+<!-- Do not copy the whol <template>, this is not how Polymer-Nuxeo work when loading slot contributions -->
 <nuxeo-slot-content name="pdfToolkit" slot="DOCUMENT_ACTIONS" order="1" disabled>
 </nuxeo-slot-content>
 ```
 
+* For more "complex" change (change inside the template):
+
+1. First, totally disable the existing contribution...
+
+```html
+<nuxeo-slot-content name="pdfToolkit" slot="DOCUMENT_ACTIONS" disabled></nuxeo-slot-content>
+```
+
+2. ...*then* create a new one, with a different name (here, `"demoPdfToolkit"`). Copy all the current contribution, then modify it.
+
 * To change the icon (default is `icons:build`), add the `icon` attribute to the call to `nuxeo-pdf-toolkit`:
 
 ```html
-<nuxeo-slot-content name="pdfToolkit" slot="DOCUMENT_ACTIONS" order="1">
+<nuxeo-slot-content name="demoPdfToolkit" slot="DOCUMENT_ACTIONS" order="1">
   . . .
         <nuxeo-pdf-toolkit document="[[document]]" icon="nuxeo:search"></nuxeo-pdf-toolkit>
   . . .
@@ -67,7 +78,7 @@ To override it, copy the contribution and tune it, typically in your Studio proj
 * To change the filter, display the button only for  `Contract`(and keep the text on "application/pdf"):
 
 ```html
-<nuxeo-slot-content name="pdfToolkit" slot="DOCUMENT_ACTIONS" order="1">
+<nuxeo-slot-content name="demoPdfToolkit" slot="DOCUMENT_ACTIONS" order="1">
   <template>
     <nuxeo-filter document="[[document]]" type="Contract" expression="document.properties[&quot;file:content&quot;] !&#x3D;&#x3D; null &amp;&amp; document.properties[&quot;file:content&quot;][&quot;mime-type&quot;] &#x3D;&#x3D;&#x3D; &quot;application/pdf&quot;" user="[[user]]">
     . . .
@@ -203,7 +214,6 @@ For some destination, an extra `details`field, object, can be passed (optional):
   *`"createVersion"`, boolean, default `false`.
   * If `createVersion` is `true`, another property `versionType`, string, must be either "Minor" or "Major" (defaults to `Minor`).
 
-
 Here are some examples (don't forget to `JSON.stringify` before calling the operation):
 
 * Derivative with lifecycle reset and custom title:
@@ -272,6 +282,7 @@ The plugin is available on [Nuxeo MarketPlace](https://connect.nuxeo.com/nuxeo/s
 <br />
 
 ## How to build
+
 ```bash
 git clone https://github.com/nuxeo-sandbox/nuxeo-labs-pdf-toolkit
 cd nuxeo-labs-pdf-toolkit
@@ -281,6 +292,7 @@ mvn clean install
 <br />
 
 ## Support
+
 **These features are not part of the Nuxeo Production platform.**
 
 These solutions are provided for inspiration and we encourage customers to use them as code samples and learning
@@ -292,11 +304,13 @@ useful for the Nuxeo Platform in general, they will be integrated directly into 
 <br />
 
 ## License
+
 [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.html)
 
 <br />
 
 ## About Nuxeo
+
 Nuxeo Platform is an open source Content Services platform, written in Java. Data can be stored in both SQL & NoSQL
 databases.
 
