@@ -21,50 +21,114 @@ package nuxeo.labs.pdf.toolkit;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
-import java.io.File;
 import java.io.IOException;
 import java.io.Serializable;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import javax.imageio.ImageIO;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException;
 import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.json.JSONArray;
 import org.nuxeo.ecm.automation.core.util.BlobList;
 import org.nuxeo.ecm.core.api.Blob;
+import org.nuxeo.ecm.core.api.Blobs;
 import org.nuxeo.ecm.core.api.CloseableFile;
 import org.nuxeo.ecm.core.api.DocumentModel;
 import org.nuxeo.ecm.core.api.NuxeoException;
 import org.nuxeo.ecm.core.api.blobholder.BlobHolder;
 import org.nuxeo.ecm.core.api.blobholder.SimpleBlobHolder;
-import org.nuxeo.ecm.core.api.impl.blob.FileBlob;
 import org.nuxeo.ecm.core.blob.ManagedBlob;
 import org.nuxeo.ecm.core.convert.api.ConversionService;
+import org.nuxeo.ecm.core.transientstore.api.MaximumTransientSpaceExceeded;
 import org.nuxeo.ecm.core.transientstore.api.TransientStore;
 import org.nuxeo.ecm.core.transientstore.api.TransientStoreService;
 import org.nuxeo.ecm.platform.picture.api.ImagingConvertConstants;
 import org.nuxeo.runtime.api.Framework;
 
 /**
- * Extract thumbnails or previews
- * 
- * @since LTS 2025
+ * Extract thumbnails or previews.
+ * <p>
+ * Rendering is bounded on purpose: see {@link #MAX_DPI}, {@link #MAX_THUMBNAIL_SIZE} and
+ * {@link #DEFAULT_MAX_PAGES}. All the operations are exposed to any authenticated user, so unbounded
+ * rendering parameters would be a trivial denial of service.
+ *
+ * @since 2025.2
  */
 public class PDFToImages {
 
+    private static final Logger log = LogManager.getLogger(PDFToImages.class);
+
+    static {
+        /*
+         * Image plugin discovery walks the whole classpath and mutates the global IIORegistry.
+         * It must happen once per class loading, definitely not on every request.
+         */
+        ImageIO.scanForPlugins();
+    }
+
     public static final int DEFAULT_THUMBNAIL_SIZE = 512;
 
-    public static final int DEFAULT_DPI = 512;
-    
+    /**
+     * Rendering resolution used when none is provided. Kept low on purpose: thumbnails are downscaled
+     * to {@link #DEFAULT_THUMBNAIL_SIZE} anyway, rendering higher is pure waste.
+     */
+    public static final int DEFAULT_DPI = 150;
+
+    /**
+     * Hard upper bound for the rendering resolution. A single A4 page at 300 dpi is already ~26 MB of heap.
+     *
+     * @since 2025.6
+     */
+    public static final int MAX_DPI = 300;
+
+    /**
+     * Hard upper bound for a thumbnail side, in pixels.
+     *
+     * @since 2025.6
+     */
+    public static final int MAX_THUMBNAIL_SIZE = 2000;
+
+    /**
+     * Default maximum number of pages {@link #createThumbnails()} accepts to render.
+     * <p>
+     * The binding constraint is not the rendering itself but the base64 payload the thumbnails operation
+     * builds in memory: roughly 230 KB of heap per page, counting the JSON array and its serialization.
+     * 150 pages is about 34 MB per request, which stays reasonable under concurrency.
+     * <p>
+     * Override with the {@code nuxeo.pdftoolkit.maxPages} configuration property.
+     *
+     * @since 2025.6
+     */
+    public static final int DEFAULT_MAX_PAGES = 150;
+
+    /**
+     * Configuration property overriding {@link #DEFAULT_MAX_PAGES}.
+     *
+     * @since 2025.6
+     */
+    public static final String MAX_PAGES_PROPERTY = "nuxeo.pdftoolkit.maxPages";
+
     public static final int PREVIEW_PAGE_MAX_SIZE = 1024;
-    
+
+    /**
+     * Rendering resolution used for a single page preview, before it is resized to
+     * {@link #PREVIEW_PAGE_MAX_SIZE}.
+     *
+     * @since 2025.6
+     */
+    public static final int PREVIEW_DPI = 300;
+
     public static final String TRANSIENT_STORE_NAME = "PDFToolkitCache";
 
     protected int width = DEFAULT_THUMBNAIL_SIZE;
@@ -86,16 +150,13 @@ public class PDFToImages {
 
     public PDFToImages(DocumentModel doc, String xpath) {
 
-        if (StringUtils.isBlank(xpath)) {
-            xpath = "file:content";
-        }
-
-        pdfBlob = (Blob) doc.getPropertyValue(xpath);
+        this(PDFTools.getBlobFromDocument(doc, xpath));
 
     }
 
     public PDFToImages(Blob b) {
 
+        PDFTools.checkIsProcessablePdf(b);
         pdfBlob = b;
 
     }
@@ -104,23 +165,34 @@ public class PDFToImages {
     // Misc. ways to set the dimension
     // ========================================
     public void setWidth(int value) {
-        width = value > 0 ? value : DEFAULT_THUMBNAIL_SIZE;
+        width = value > 0 ? Math.min(value, MAX_THUMBNAIL_SIZE) : DEFAULT_THUMBNAIL_SIZE;
     }
 
+    /**
+     * @since 2025.6
+     */
+    public void setHeight(int value) {
+        height = value > 0 ? Math.min(value, MAX_THUMBNAIL_SIZE) : DEFAULT_THUMBNAIL_SIZE;
+    }
+
+    /**
+     * @deprecated since 2025.6, use {@link #setHeight(int)} instead. Kept for compatibility (naming typo).
+     */
+    @Deprecated
     public void setheight(int value) {
-        height = value > 0 ? value : DEFAULT_THUMBNAIL_SIZE;
+        setHeight(value);
     }
 
     public void setSize(int size) {
 
         setWidth(size);
-        setheight(size);
+        setHeight(size);
     }
 
     public void setSize(int width, int height) {
 
         setWidth(width);
-        setheight(height);
+        setHeight(height);
     }
 
     public void setSize(String size) {
@@ -139,11 +211,8 @@ public class PDFToImages {
         String hStr = size.substring(idx + 1).trim();
 
         try {
-            width = Integer.parseInt(wStr);
-            height = Integer.parseInt(hStr);
-
-            setSize(width, height);
-
+            // Always go through the setters: they normalize non-positive values and apply the upper bounds.
+            setSize(Integer.parseInt(wStr), Integer.parseInt(hStr));
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("Malformed dimension string: " + size, e);
         }
@@ -151,20 +220,19 @@ public class PDFToImages {
     }
 
     public void setDpi(int value) {
-        dpi = value > 0 ? value : DEFAULT_DPI;
+        dpi = value > 0 ? Math.min(value, MAX_DPI) : DEFAULT_DPI;
     }
 
     // ========================================
     // Extraction
     // ========================================
     /**
-     * Extract the thumbnails, with max width/height of maxDimension.
-     * If maxDimension is <= 0, the DEFAULT_DIMENSION applies.
-     * 
-     * @param maxDimension
-     * @return
-     * @throws IOException
-     * @since TODO
+     * Extract the thumbnails, with max width/height of {@code size}.
+     * If {@code size} is &lt;= 0, {@link #DEFAULT_THUMBNAIL_SIZE} applies.
+     *
+     * @param size the max width and height of each thumbnail
+     * @return the ordered list of thumbnails, one per page
+     * @since 2025.2
      */
     public BlobList createThumbnails(int size) {
 
@@ -184,106 +252,176 @@ public class PDFToImages {
 
     /**
      * Extract the thumbnails, given a dimension passed as string, "{width}x{height}".
-     * If not passed, default dimension applies (same if a value is <= 0)
-     * 
-     * @param maxDimension
-     * @return
-     * @throws IOException
-     * @since TODO
+     * If not passed, default dimension applies (same if a value is &lt;= 0).
+     *
+     * @param size the dimension, "{width}x{height}"
+     * @return the ordered list of thumbnails, one per page
+     * @since 2025.2
      */
     public BlobList createThumbnails(String size) {
 
         setSize(size);
 
-        if (StringUtils.isBlank(size)) {
-            return createThumbnails(0);
-        }
+        return createThumbnails();
 
-        int idx = size.indexOf('x');
-        if (idx <= 0 || idx == size.length() - 1) {
-            throw new IllegalArgumentException("Malformed dimension string: " + size);
-        }
-
-        String wStr = size.substring(0, idx).trim();
-        String hStr = size.substring(idx + 1).trim();
-
-        try {
-            width = Integer.parseInt(wStr);
-            height = Integer.parseInt(hStr);
-
-            if (width <= 0) {
-                width = DEFAULT_THUMBNAIL_SIZE;
-            }
-            if (height == 0) {
-                height = DEFAULT_THUMBNAIL_SIZE;
-            }
-
-            return createThumbnails();
-
-        } catch (NumberFormatException e) {
-            throw new IllegalArgumentException("Malformed dimension string: " + size, e);
-        }
     }
-    
+
     protected static TransientStore getTransientStore() {
         TransientStoreService transientStoreService = Framework.getService(TransientStoreService.class);
         return transientStoreService.getStore(TRANSIENT_STORE_NAME);
     }
-    
-    // Returns a key that can be used either by the list of thumbnails (pageNum null) or by a preview.
-    protected String getCacheKey(Integer pageNum) {
-        
-        String pageNumSuffix = "-" + ((pageNum != null) ? pageNum : 0);
-        
-        String key = pdfBlob.getDigest();
-        if(StringUtils.isNotBlank(key)) {
-            return key + pageNumSuffix;
+
+    /**
+     * Maximum number of pages the thumbnails rendering accepts, see {@link #DEFAULT_MAX_PAGES}.
+     *
+     * @since 2025.6
+     */
+    protected static int getMaxPages() {
+
+        String value = Framework.getProperty(MAX_PAGES_PROPERTY);
+        if (StringUtils.isNotBlank(value)) {
+            try {
+                int max = Integer.parseInt(value.trim());
+                if (max > 0) {
+                    return max;
+                }
+                log.warn("{} must be > 0, found \"{}\". Falling back to {}.", MAX_PAGES_PROPERTY, value,
+                        DEFAULT_MAX_PAGES);
+            } catch (NumberFormatException e) {
+                log.warn("{} is not a number (\"{}\"). Falling back to {}.", MAX_PAGES_PROPERTY, value,
+                        DEFAULT_MAX_PAGES);
+            }
         }
-        if(pdfBlob instanceof ManagedBlob) {
-            key = ((ManagedBlob) pdfBlob).getKey();
-        }
-        if(StringUtils.isNotBlank(key)) {
-            return key + pageNumSuffix;
-        }
-        
-        String fileName = pdfBlob.getFilename();
-        long length = pdfBlob.getLength();
-        if(StringUtils.isNotBlank(fileName)) {
-            return fileName + "-" + length + pageNumSuffix;
-        }
-        
-        // No digest, no key, no filename : what the hell is this blob? :-)
-        // (likely something from a unit test)
-        return null;
-        
+
+        return DEFAULT_MAX_PAGES;
     }
 
     /**
-     * Create thumbnails (PNG) for all pages of the given PDF.
-     * Uses the width/height defined in previous calls, or default values.
+     * Build a cache key from the blob identity plus the given rendering discriminator.
+     * <p>
+     * Returns {@code null} when the blob cannot be identified by content: caching on a weaker key
+     * (file name and length, say) could serve another document's images.
+     *
+     * @since 2025.6
      */
-    public BlobList createThumbnails() {
-        
-        String cacheKey = getCacheKey(null);
-        TransientStore store = getTransientStore();
-        if(cacheKey != null) {
-            if(store.exists(cacheKey)) {
-                return new BlobList(store.getBlobs(cacheKey));
-            }
-            store.setCompleted(cacheKey, false);
+    protected String buildCacheKey(String renderingSuffix) {
+
+        String key = pdfBlob.getDigest();
+        if (StringUtils.isBlank(key) && pdfBlob instanceof ManagedBlob managed) {
+            key = managed.getKey();
         }
 
-        ImageIO.scanForPlugins();
+        if (StringUtils.isBlank(key)) {
+            log.debug("Blob \"{}\" has no digest and no storage key, caching disabled.", pdfBlob.getFilename());
+            return null;
+        }
+
+        return key + renderingSuffix;
+    }
+
+    /**
+     * Cache key of the whole thumbnails list. The rendering parameters are part of the key: the very same
+     * PDF rendered at another size or another resolution is a different cache entry.
+     *
+     * @since 2025.6
+     */
+    protected String getThumbnailsCacheKey() {
+        return buildCacheKey("-thumbs-" + width + "x" + height + "-" + dpi);
+    }
+
+    /**
+     * Cache key of a single page preview.
+     *
+     * @since 2025.6
+     */
+    protected String getPreviewCacheKey(int pageNum) {
+        return buildCacheKey("-preview-" + pageNum + "-" + PREVIEW_PAGE_MAX_SIZE + "-" + PREVIEW_DPI);
+    }
+
+    /**
+     * Return the cached blobs for this key, or {@code null} when there is no usable cache entry.
+     * <p>
+     * An entry is usable only if it is flagged completed AND actually holds blobs. Beware of the
+     * TransientStore contract: {@code exists()} only checks that the ".completed" key is present, whatever
+     * its value, and {@code getBlobs()} returns an empty list for an entry that exists but holds nothing,
+     * and null for an entry that vanished. A reserved-but-unfinished entry, or one left over by a failed
+     * run, must never be served.
+     *
+     * @since 2025.6
+     */
+    protected List<Blob> getFromCache(TransientStore store, String cacheKey) {
+
+        if (cacheKey == null || !store.exists(cacheKey) || !store.isCompleted(cacheKey)) {
+            return null;
+        }
+
+        List<Blob> blobs = store.getBlobs(cacheKey);
+        if (blobs == null || blobs.isEmpty()) {
+            return null;
+        }
+
+        return blobs;
+    }
+
+    /**
+     * Store the blobs in the cache. A full cache must never fail a request whose result is already computed.
+     *
+     * @return true if the blobs were effectively cached
+     * @since 2025.6
+     */
+    protected boolean putInCache(TransientStore store, String cacheKey, List<Blob> blobs) {
+
+        if (cacheKey == null) {
+            return false;
+        }
+
+        try {
+            store.putBlobs(cacheKey, blobs);
+            store.setCompleted(cacheKey, true);
+            return true;
+        } catch (MaximumTransientSpaceExceeded e) {
+            log.warn("{} is full, nothing cached for key {}.", TRANSIENT_STORE_NAME, cacheKey, e);
+            return false;
+        }
+    }
+
+    /**
+     * Create thumbnails (JPEG) for all pages of the PDF.
+     * Uses the width/height/dpi defined in previous calls, or default values.
+     *
+     * @return the ordered list of thumbnails, one per page
+     * @since 2025.2
+     */
+    public BlobList createThumbnails() {
+
+        TransientStore store = getTransientStore();
+        String cacheKey = getThumbnailsCacheKey();
+
+        List<Blob> cached = getFromCache(store, cacheKey);
+        if (cached != null) {
+            log.debug("Thumbnails cache hit for key {}.", cacheKey);
+            return new BlobList(cached);
+        }
+
         BlobList results = new BlobList();
+        boolean stored = false;
+        long start = System.currentTimeMillis();
 
         // pdfBlob.getFile() could be null, like when the
         // related file is on S3 for example, we must download it.
         try (CloseableFile source = pdfBlob.getCloseableFile();
                 PDDocument document = Loader.loadPDF(source.getFile())) {
 
+            int pageCount = document.getNumberOfPages();
+            int maxPages = getMaxPages();
+            if (pageCount > maxPages) {
+                throw new NuxeoException("PDF \"" + pdfBlob.getFilename() + "\" has " + pageCount
+                        + " pages, above the " + maxPages + " pages limit for thumbnails rendering. Raise "
+                        + MAX_PAGES_PROPERTY + " if your server can afford it.");
+            }
+
             PDFRenderer renderer = new PDFRenderer(document);
 
-            int pageCount = document.getNumberOfPages();
             for (int pageIndex = 0; pageIndex < pageCount; pageIndex++) {
 
                 BufferedImage pageImage = renderer.renderImageWithDPI(pageIndex, dpi, ImageType.RGB);
@@ -291,45 +429,51 @@ public class PDFToImages {
                 // Create scaled thumbnail
                 BufferedImage thumb = scaleToFit(pageImage, width, height);
 
-                Blob resultBlob = imageToBlob(thumb, "jpg", ".jpg", "image/jpeg", pageIndex + 1);
+                results.add(imageToBlob(thumb, "jpg", ".jpg", "image/jpeg", pageIndex + 1));
+            }
 
-                results.add(resultBlob);
-            }
-            if(cacheKey != null) {
-                store.putBlobs(cacheKey, results);
-            }
+            stored = putInCache(store, cacheKey, results);
+
+            log.info("Rendered {} thumbnails ({}x{} @ {} dpi) in {} ms for blob \"{}\", cached: {}.", results.size(),
+                    width, height, dpi, System.currentTimeMillis() - start, pdfBlob.getFilename(), stored);
 
             return results;
 
+        } catch (InvalidPasswordException e) {
+            throw new NuxeoException(
+                    "PDF \"" + pdfBlob.getFilename() + "\" is password-protected and cannot be processed.", e);
         } catch (IOException e) {
-            throw new NuxeoException("Failed to extract the pages", e);
+            throw new NuxeoException("Failed to extract the pages of \"" + pdfBlob.getFilename() + "\".", e);
         } finally {
-            if(cacheKey != null) {
-                store.setCompleted(cacheKey, true);
+            /*
+             * Never leave a half-baked entry behind. An entry that exists without blobs is served as an
+             * empty result forever (until the TTL expires), which is worse than no cache at all.
+             */
+            if (cacheKey != null && !stored) {
+                store.remove(cacheKey);
             }
         }
     }
 
     /**
-     * Return the image preview, with no resizing.
-     * Only dpi can be tuned (previous call to setDpi()) if nneded.
-     * It resizes it at max PREVIEW_PAGE_SIZE/PREVIEW_PAGE_SIZE
-     * 
-     * @param pageNum
-     * @return
+     * Return the JPEG preview of a page, resized to at most {@link #PREVIEW_PAGE_MAX_SIZE} on each side.
+     *
+     * @param pageNum the page to render, starting at 1
+     * @return the JPEG preview of the page
+     * @since 2025.2
      */
     public Blob getJpegPreviewImage(int pageNum) {
-        
-        String cacheKey = getCacheKey(pageNum);
+
         TransientStore store = getTransientStore();
-        if(cacheKey != null) {
-            if(store.exists(cacheKey)) {
-                return store.getBlobs(cacheKey).get(0);
-            }
-            store.setCompleted(cacheKey, false);
+        String cacheKey = getPreviewCacheKey(pageNum);
+
+        List<Blob> cached = getFromCache(store, cacheKey);
+        if (cached != null) {
+            log.debug("Preview cache hit for key {}.", cacheKey);
+            return cached.get(0);
         }
 
-        ImageIO.scanForPlugins();
+        boolean stored = false;
 
         // pdfBlob.getFile() could be null, like when the
         // related file is on S3 for example, we must download it.
@@ -337,17 +481,14 @@ public class PDFToImages {
                 PDDocument document = Loader.loadPDF(source.getFile())) {
 
             int pageCount = document.getNumberOfPages();
-            PDFTools.validatePageNumber(pageNum, pageCount, "" + pageNum);
+            PDFTools.validatePageNumber(pageNum, pageCount, String.valueOf(pageNum));
 
             PDFRenderer renderer = new PDFRenderer(document);
-            int pageIndex = pageNum - 1;
-            BufferedImage pageImage = renderer.renderImageWithDPI(pageIndex, 300, ImageType.RGB);
+            BufferedImage pageImage = renderer.renderImageWithDPI(pageNum - 1, PREVIEW_DPI, ImageType.RGB);
 
-            // pageImage = scaleToFit(pageImage, PREVIEW_PAGE_SIZE, PREVIEW_PAGE_SIZE);
+            Blob fullSizeBlob = imageToBlob(pageImage, "jpg", ".jpg", "image/jpeg", pageNum);
 
-            Blob resultBlob = imageToBlob(pageImage, "jpg", ".jpg", "image/jpeg", pageNum);
-
-            SimpleBlobHolder bh = new SimpleBlobHolder(resultBlob);
+            SimpleBlobHolder bh = new SimpleBlobHolder(fullSizeBlob);
             Map<String, Serializable> parameters = new HashMap<>();
 
             parameters.put(ImagingConvertConstants.OPTION_RESIZE_WIDTH, PREVIEW_PAGE_MAX_SIZE);
@@ -356,21 +497,23 @@ public class PDFToImages {
 
             BlobHolder holder = Framework.getService(ConversionService.class).convert("pictureResize", bh, parameters);
             Blob resizedBlob = holder.getBlob();
-            // Make sure to realign values
+            // Realign the metadata lost by the converter, then cache and return the very same blob.
             resizedBlob.setMimeType("image/jpeg");
-            resultBlob.setFilename(resultBlob.getFilename());
-            
-            if(cacheKey != null) {
-                store.putBlobs(cacheKey, Collections.singletonList(resultBlob));
-            }
+            resizedBlob.setFilename(fullSizeBlob.getFilename());
+
+            stored = putInCache(store, cacheKey, Collections.singletonList(resizedBlob));
 
             return resizedBlob;
 
+        } catch (InvalidPasswordException e) {
+            throw new NuxeoException(
+                    "PDF \"" + pdfBlob.getFilename() + "\" is password-protected and cannot be processed.", e);
         } catch (IOException e) {
-            throw new NuxeoException("Failed to extract the page and make it a PNG.", e);
+            throw new NuxeoException(
+                    "Failed to extract page " + pageNum + " of \"" + pdfBlob.getFilename() + "\" as a JPEG.", e);
         } finally {
-            if(cacheKey != null) {
-                store.setCompleted(cacheKey, true);
+            if (cacheKey != null && !stored) {
+                store.remove(cacheKey);
             }
         }
 
@@ -385,10 +528,9 @@ public class PDFToImages {
 
         String fileNameNoExt = PDFTools.getFileNameNoExtension(pdfBlob, "pdf-img", "-p" + pageNum);
 
-        File resultFile = Framework.createTempFile(fileNameNoExt, fileExtension);
-        ImageIO.write(img, formatName, resultFile);
-
-        FileBlob result = new FileBlob(resultFile);
+        // See PDFTools.saveToFileBlob: this is the only way to get a temporary file that will be deleted.
+        Blob result = Blobs.createBlobWithExtension(fileExtension);
+        ImageIO.write(img, formatName, result.getFile());
         result.setFilename(fileNameNoExt + fileExtension);
         result.setMimeType(mimeType);
 
@@ -397,11 +539,11 @@ public class PDFToImages {
     }
 
     /**
-     * Return an array of Base64 encoding of the input blobs (in same order)
-     * 
-     * @param blobs
-     * @return
-     * @throws IOException
+     * Return an array of Base64 encoding of the input blobs (in same order).
+     *
+     * @param blobs the blobs to encode
+     * @return the JSON array of base64 strings
+     * @since 2025.2
      */
     public static JSONArray toBase64JSONArray(BlobList blobs) {
 
@@ -418,7 +560,7 @@ public class PDFToImages {
             return array;
 
         } catch (IOException e) {
-            throw new NuxeoException(e);
+            throw new NuxeoException("Failed to base64-encode the images.", e);
         }
     }
 
@@ -439,8 +581,9 @@ public class PDFToImages {
             scale = 1.0;
         }
 
-        int newW = (int) Math.round(w * scale);
-        int newH = (int) Math.round(h * scale);
+        // Never let a rounding to zero produce an invalid image
+        int newW = Math.max(1, (int) Math.round(w * scale));
+        int newH = Math.max(1, (int) Math.round(h * scale));
 
         BufferedImage dst = new BufferedImage(newW, newH, BufferedImage.TYPE_INT_RGB);
         Graphics2D g2d = dst.createGraphics();

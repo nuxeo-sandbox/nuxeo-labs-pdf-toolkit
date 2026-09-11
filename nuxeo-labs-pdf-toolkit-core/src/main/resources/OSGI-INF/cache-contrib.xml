@@ -3,12 +3,15 @@
 
   <extension target="org.nuxeo.ecm.core.transientstore.TransientStorageComponent" point="store">
     <store name="PDFToolkitCache">
-		<!-- Same values as the rendition cache -->
+      <!-- Same values as the rendition cache -->
       <firstLevelTTL>${nuxeo.transientstore.rendition.cache.ttl:=240}</firstLevelTTL>
       <secondLevelTTL>${nuxeo.transientstore.rendition.cache.ttl2:=10}</secondLevelTTL>
-      <!-- Specific values. Our thumbnails are small, ~50k, 100M should be OK -->
-      <targetMaxSizeMB>100</targetMaxSizeMB>
-      <absoluteMaxSizeMB>110</absoluteMaxSizeMB>
+      <!--
+        This store holds BOTH the small page thumbnails (~50 KB each) and the full page previews
+        (several hundred KB each), so size it accordingly and make it tunable per installation.
+      -->
+      <targetMaxSizeMB>${nuxeo.pdftoolkit.cache.targetMaxSizeMB:=500}</targetMaxSizeMB>
+      <absoluteMaxSizeMB>${nuxeo.pdftoolkit.cache.absoluteMaxSizeMB:=600}</absoluteMaxSizeMB>
     </store>
   </extension>
 </component>
