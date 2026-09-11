@@ -109,14 +109,53 @@ The plugin provides UI in EN and FR thanks to translation keys. If you want the 
 Every action of the dialog is backed by an operation that can be used, of course, outside the context of this UI:
 
 * PDFLabs.GetThumbnails
+* PDFLabs.PrepareThumbnails
 * PDFLabs.JpegImagePreview
 * PDFLabs.ExtractPagesByRange
 * PDFLabs.RemovePages
 * PDFLabs.ReorderPages
 
+### `PDFLabs.PrepareThumbnails`
+
+This is the operation the dialog uses, and the one to prefer when displaying thumbnails. It renders every page **once**, fills the server side cache, and returns one URL per page instead of a base64 payload. The images are then fetched by the browser, which can cache them.
+
+* Input: a `document` (an URL needs a document id — use `PDFLabs.GetThumbnails` when all you have is a blob).
+* Output: JSON `blob`, `{"pageCount": n, "urls": [...]}`.
+* Parameters:
+  * `xpath`: String, optional. `file:content` by default.
+  * `width`: Integer, optional. Default 512, maximum 2000.
+  * `height`: Integer, optional. Default 512, maximum 2000.
+  * `dpi`: Integer, optional. Default 150, maximum 300.
+
+The URLs are **relative to the Nuxeo application root**, prefix them with the server base URL:
+
+```json
+{
+  "pageCount": 2,
+  "urls": [
+    "site/pdftoolkit/thumb/8a7e.../1?w=512&h=512&dpi=150&v=d41d8cd98f00b204e9800998ecf8427e",
+    "site/pdftoolkit/thumb/8a7e.../2?w=512&h=512&dpi=150&v=d41d8cd98f00b204e9800998ecf8427e"
+  ]
+}
+```
+
+The `v` parameter is the **digest of the PDF**. It makes the URL content-addressed: replacing `file:content` produces different URLs, so the browser fetches the new thumbnails instead of serving the previous ones from its cache. It is not used to choose what is served — the endpoint always returns the current content of the document — only to decide how long the response may be cached.
+
+Each URL is served by the plugin REST endpoint, `GET /nuxeo/site/pdftoolkit/thumb/{docId}/{pageNumber}`, which:
+
+* resolves the document through the **current user session**, so the read permission is enforced by the repository;
+* only **reads** the cache filled by the operation — it never re-opens the PDF, which is what makes serving 150 pages cheap;
+* falls back on rendering the whole document if the cache entry expired in the meantime;
+* sends an `ETag` in every case, plus `Cache-Control: private, max-age=3600` when `v` is present, or `private, no-cache` when it is not — a plain URL is then revalidated on each request, which costs a `304` rather than a full transfer.
+
+<br />
+
 ### `PDFLabs.GetThumbnails`
 
 Returns a JSON array of Base64 encoded jpeg thumbnails. To use one in an `<img src`, prefix it with `data:image/jpeg;base64,`.
+
+> [!NOTE]
+> Prefer `PDFLabs.PrepareThumbnails` to display thumbnails: it does not build the whole payload in memory and lets the browser cache the images. `PDFLabs.GetThumbnails` remains useful when the input is a blob rather than a document, or in a scripting context where a single call is simpler.
 
 * Input: Either a `blob` or a `document`. If a `document`, `xpath` is the field to use, `file:content` by default.
 * Output: JSON Array `blob` of the ordered thumbnails, jpeg, as base64.

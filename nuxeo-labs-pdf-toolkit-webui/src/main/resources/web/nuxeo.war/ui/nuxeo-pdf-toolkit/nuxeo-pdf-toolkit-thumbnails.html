@@ -77,8 +77,17 @@ Actions are taken by the parent via events.
         width: 100%;
         max-width: 120px;
         height: auto;
+        min-height: 40px;
         border: 1px solid #ccc;
         border-radius: 2px;
+        background-color: #fafafa;
+      }
+
+      /* A tile whose image could not be fetched */
+      .page-thumbnail.thumbnail-error {
+        border-color: #d32f2f;
+        background-color: #fdecea;
+        min-height: 120px;
       }
 
       .page-number {
@@ -110,6 +119,8 @@ Actions are taken by the parent via events.
                on-dragend="_onDragEnd">
             <img class="page-thumbnail"
                  src="[[page.image]]"
+                 loading="lazy"
+                 on-error="_onThumbnailError"
                  alt$="Page [[_computePageNumber(index, page.originalPageNumber)]]">
             <span class="page-number">[[_computePageNumber(index, page.originalPageNumber)]]</span>
           </div>
@@ -288,6 +299,15 @@ Actions are taken by the parent via events.
 
       _getSelectedClass: function(selected) {
         return selected ? 'selected' : '';
+      },
+
+      /*
+       * Thumbnails are served by the PDF Toolkit REST endpoint, so a tile can fail on its own
+       * (expired session, server error). Flag it instead of leaving a silently empty rectangle.
+       */
+      _onThumbnailError: function(e) {
+        console.error('Failed to load a page thumbnail', e.target && e.target.src);
+        e.target.classList.add('thumbnail-error');
       },
 
       _computeHasSelection: function() {

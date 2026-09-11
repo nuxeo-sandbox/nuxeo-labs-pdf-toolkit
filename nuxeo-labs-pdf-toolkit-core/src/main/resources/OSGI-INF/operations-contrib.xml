@@ -3,6 +3,7 @@
 
   <extension point="operations" target="org.nuxeo.ecm.core.operation.OperationServiceComponent">
     <operation class="nuxeo.labs.pdf.toolkit.operations.PDFThumbnailsOp"/>
+    <operation class="nuxeo.labs.pdf.toolkit.operations.PDFPrepareThumbnailsOp"/>
     <operation class="nuxeo.labs.pdf.toolkit.operations.PDFPageRemoverOp"/>
     <operation class="nuxeo.labs.pdf.toolkit.operations.PDFPageExtractorOp" />
     <operation class="nuxeo.labs.pdf.toolkit.operations.PDFPageOrderingOp" />

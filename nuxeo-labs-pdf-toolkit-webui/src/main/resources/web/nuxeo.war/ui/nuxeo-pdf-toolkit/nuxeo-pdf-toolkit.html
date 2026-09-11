@@ -94,11 +94,13 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       }
     </style>
 
+    <nuxeo-connection id="nx"></nuxeo-connection>
+
     <nuxeo-operation id="extractOp" op="PDFLabs.ExtractPagesByRange"></nuxeo-operation>
     <nuxeo-operation id="removePagesOp" op="PDFLabs.RemovePages"></nuxeo-operation>
     <nuxeo-operation id="reorderOp" op="PDFLabs.ReorderPages"></nuxeo-operation>
 
-    <nuxeo-operation id="getThumbnailsOp" op="PDFLabs.GetThumbnails"></nuxeo-operation>
+    <nuxeo-operation id="prepareThumbnailsOp" op="PDFLabs.PrepareThumbnails"></nuxeo-operation>
 
     <div class="action" on-tap="_openDialog">
       <paper-icon-button id="bt" icon="[[icon]]"></paper-icon-button>
@@ -487,17 +489,20 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       _loadThumbnails: function() {
         this.set('loading', true);
 
-        var op = this.$.getThumbnailsOp;
+        var op = this.$.prepareThumbnailsOp;
         op.input = this.document;
-        op.params = {}; // if any
+        op.params = {}; // width / height / dpi could be passed here
         op.execute()
           .then(function(response) {
-            // PDFLabs.GetThumbnails returns base64 encoded JPEG images...
-            var sources = response.map(function(imgData) {
-              return 'data:image/jpeg;base64,' + imgData;
+            /*
+             * PDFLabs.PrepareThumbnails renders every page once, fills the server side cache and
+             * returns one URL per page. The images are then fetched by the browser, which can cache
+             * them: nothing is transported as base64 any more.
+             */
+            var baseUrl = this._getBaseUrl();
+            var sources = (response.urls || []).map(function(url) {
+              return baseUrl + url;
             });
-            // ... if it returned an array of URLS, we would just:
-            // var sources = response;
             this.set('thumbnailSources', sources);
             this.set('loading', false);
           }.bind(this))
@@ -506,6 +511,12 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
             this.set('loading', false);
             this.fire('notify', { message: this.i18n('pdftoolkit.error.thumbnailsFailed') });
           }.bind(this));
+      },
+
+      // The operation returns URLs relative to the Nuxeo application root
+      _getBaseUrl: function() {
+        var url = (this.$.nx && this.$.nx.url) || '/nuxeo/';
+        return url.charAt(url.length - 1) === '/' ? url : url + '/';
       },
 
       // This function prepares the object to send to the operation(s)

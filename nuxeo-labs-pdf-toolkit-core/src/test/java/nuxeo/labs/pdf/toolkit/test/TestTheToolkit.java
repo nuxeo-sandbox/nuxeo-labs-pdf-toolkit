@@ -20,17 +20,26 @@ package nuxeo.labs.pdf.toolkit.test;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.File;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.nuxeo.common.utils.FileUtils;
+import org.nuxeo.ecm.automation.AutomationService;
+import org.nuxeo.ecm.automation.OperationContext;
 import org.nuxeo.ecm.automation.core.util.BlobList;
 import org.nuxeo.ecm.automation.test.AutomationFeature;
 import org.nuxeo.ecm.core.api.Blob;
@@ -54,6 +63,8 @@ import org.nuxeo.runtime.test.runner.TransactionalFeature;
 
 import jakarta.inject.Inject;
 import nuxeo.labs.pdf.toolkit.PDFToImages;
+import nuxeo.labs.pdf.toolkit.operations.PDFPageRemoverOp;
+import nuxeo.labs.pdf.toolkit.operations.PDFPrepareThumbnailsOp;
 
 /**
  * Test the caching and the rendering bounds. About everything else is tested in TestOperations*.
@@ -78,6 +89,9 @@ public class TestTheToolkit {
     @Inject
     protected TransactionalFeature txFeature;
 
+    @Inject
+    protected AutomationService automationService;
+
     protected TransientStore store;
 
     @Before
@@ -95,7 +109,7 @@ public class TestTheToolkit {
      * Caching requires a blob that can be identified by content, so we need a blob stored in the repository
      * (it then carries a digest), not a bare FileBlob.
      */
-    protected Blob createTestDocBlob() {
+    protected DocumentModel createTestDoc() {
 
         File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
 
@@ -104,8 +118,12 @@ public class TestTheToolkit {
         doc = session.createDocument(doc);
         txFeature.nextTransaction();
 
-        doc = session.getDocument(doc.getRef());
-        Blob blob = (Blob) doc.getPropertyValue("file:content");
+        return session.getDocument(doc.getRef());
+    }
+
+    protected Blob createTestDocBlob() {
+
+        Blob blob = (Blob) createTestDoc().getPropertyValue("file:content");
         assertNotNull(blob);
 
         return blob;
@@ -262,5 +280,160 @@ public class TestTheToolkit {
         } catch (NuxeoException e) {
             assertTrue(e.getMessage().contains("has no blob"));
         }
+    }
+
+    // ========================================
+    // Single page thumbnail, used by the REST endpoint
+    // ========================================
+    @Test
+    public void shouldGetSingleThumbnailFromCache() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        // Fill the cache the way PDFLabs.PrepareThumbnails does
+        assertEquals(TEST_PDF_PAGE_COUNT, new PDFToImages(b).createThumbnails().size());
+        assertEquals(1, cacheKeys().size());
+
+        Blob thumbnail = new PDFToImages(b).getThumbnail(3);
+        assertNotNull(thumbnail);
+        assertEquals("image/jpeg", thumbnail.getMimeType());
+
+        // Serving a page must not create another entry: it only reads the cache
+        assertEquals(1, cacheKeys().size());
+    }
+
+    @Test
+    public void shouldRenderWholeDocumentWhenSingleThumbnailMissesTheCache() throws Exception {
+
+        Blob b = createTestDocBlob();
+        assertTrue(cacheKeys().isEmpty());
+
+        // No cache at all: getThumbnail must render everything once, not just the asked page,
+        // otherwise serving N pages would reopen and reparse the PDF N times.
+        Blob thumbnail = new PDFToImages(b).getThumbnail(7);
+        assertNotNull(thumbnail);
+
+        assertEquals(1, cacheKeys().size());
+        assertEquals(TEST_PDF_PAGE_COUNT, new PDFToImages(b).createThumbnails().size());
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectThumbnailPageAboveDocumentPageCount() throws Exception {
+        new PDFToImages(createTestDocBlob()).getThumbnail(TEST_PDF_PAGE_COUNT + 1);
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectThumbnailPageZero() throws Exception {
+        new PDFToImages(createTestDocBlob()).getThumbnail(0);
+    }
+
+    // ========================================
+    // PDFLabs.PrepareThumbnails
+    // ========================================
+    @Test
+    public void shouldPrepareThumbnailsAndReturnUrls() throws Exception {
+
+        DocumentModel doc = createTestDoc();
+
+        OperationContext ctx = new OperationContext(session);
+        ctx.setInput(doc);
+        Blob result = (Blob) automationService.run(ctx, PDFPrepareThumbnailsOp.ID, new HashMap<>());
+        assertNotNull(result);
+        assertEquals("application/json", result.getMimeType());
+
+        JSONObject json = new JSONObject(result.getString());
+        assertEquals(TEST_PDF_PAGE_COUNT, json.getInt("pageCount"));
+
+        JSONArray urls = json.getJSONArray("urls");
+        assertEquals(TEST_PDF_PAGE_COUNT, urls.length());
+
+        // One URL per page, pointing at the WebEngine module, carrying the rendering parameters
+        String first = urls.getString(0);
+        assertTrue("Unexpected URL: " + first, first.startsWith("site/pdftoolkit/thumb/" + doc.getId() + "/1?"));
+        assertTrue(first.contains("w=512"));
+        assertTrue(first.contains("h=512"));
+        assertTrue(first.contains("dpi=150"));
+        assertTrue(urls.getString(TEST_PDF_PAGE_COUNT - 1).contains("/" + TEST_PDF_PAGE_COUNT + "?"));
+
+        // The whole point: the cache is filled, so the endpoint never has to open the PDF
+        assertEquals(1, cacheKeys().size());
+    }
+
+    @Test
+    public void shouldPrepareThumbnailsWithCustomSize() throws Exception {
+
+        DocumentModel doc = createTestDoc();
+
+        OperationContext ctx = new OperationContext(session);
+        ctx.setInput(doc);
+        Map<String, Object> params = new HashMap<>();
+        params.put("width", 120);
+        params.put("height", 120);
+        Blob result = (Blob) automationService.run(ctx, PDFPrepareThumbnailsOp.ID, params);
+
+        JSONObject json = new JSONObject(result.getString());
+        String first = json.getJSONArray("urls").getString(0);
+        assertTrue("Rendering parameters must travel in the URL: " + first, first.contains("w=120"));
+        assertTrue(first.contains("h=120"));
+    }
+
+    /** Extract the value of the content token from a thumbnail URL. */
+    protected String contentTokenOf(String url) {
+        Matcher m = Pattern.compile("[?&]v=([^&]+)").matcher(url);
+        assertTrue("No content token in URL: " + url, m.find());
+        return m.group(1);
+    }
+
+    protected JSONObject prepareThumbnails(DocumentModel doc) throws Exception {
+        OperationContext ctx = new OperationContext(session);
+        ctx.setInput(doc);
+        Blob result = (Blob) automationService.run(ctx, PDFPrepareThumbnailsOp.ID, new HashMap<>());
+        return new JSONObject(result.getString());
+    }
+
+    @Test
+    public void shouldPutTheContentTokenInTheUrls() throws Exception {
+
+        DocumentModel doc = createTestDoc();
+        Blob pdf = (Blob) doc.getPropertyValue("file:content");
+
+        JSONArray urls = prepareThumbnails(doc).getJSONArray("urls");
+        assertEquals(pdf.getDigest(), contentTokenOf(urls.getString(0)));
+    }
+
+    /**
+     * The bug this guards against: the URL carries the document id, so replacing file:content used to
+     * produce the very same URLs. Combined with a long max-age, the browser kept serving the previous
+     * thumbnails, and reopening the dialog showed the pages in their old order.
+     */
+    @Test
+    public void shouldChangeTheUrlsWhenTheBlobIsReplaced() throws Exception {
+
+        DocumentModel doc = createTestDoc();
+
+        JSONObject before = prepareThumbnails(doc);
+        assertEquals(TEST_PDF_PAGE_COUNT, before.getInt("pageCount"));
+        String tokenBefore = contentTokenOf(before.getJSONArray("urls").getString(0));
+
+        // Replace file:content the way the dialog does, here by removing pages
+        OperationContext ctx = new OperationContext(session);
+        ctx.setInput(doc);
+        Map<String, Object> params = new HashMap<>();
+        params.put("pageRange", "1-4");
+        params.put("destinationJsonStr", "{\"destination\":\"newFile\"}");
+        automationService.run(ctx, PDFPageRemoverOp.ID, params);
+        txFeature.nextTransaction();
+
+        doc = session.getDocument(doc.getRef());
+
+        JSONObject after = prepareThumbnails(doc);
+        assertEquals(TEST_PDF_PAGE_COUNT - 4, after.getInt("pageCount"));
+        String tokenAfter = contentTokenOf(after.getJSONArray("urls").getString(0));
+
+        assertNotEquals("A new PDF must yield new URLs, otherwise the browser serves stale thumbnails",
+                tokenBefore, tokenAfter);
+
+        // And the server did render the new content, not reuse the old cache entry
+        assertEquals(2, cacheKeys().size());
     }
 }

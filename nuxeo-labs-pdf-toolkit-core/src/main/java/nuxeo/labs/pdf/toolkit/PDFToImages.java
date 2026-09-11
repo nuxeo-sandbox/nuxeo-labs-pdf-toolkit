@@ -297,7 +297,33 @@ public class PDFToImages {
     }
 
     /**
-     * Build a cache key from the blob identity plus the given rendering discriminator.
+     * A token identifying the <b>content</b> being rendered, not the document holding it.
+     * <p>
+     * Two uses, and they must stay consistent: it is the base of the cache key, and it is put in the
+     * thumbnail URLs so that a new content yields a new URL. Without it, replacing {@code file:content}
+     * would leave the browser serving the previous thumbnails from its own HTTP cache, since the URL
+     * only carries the document id.
+     *
+     * @return the content token, or {@code null} when the blob cannot be identified by content
+     * @since 2025.6
+     */
+    public String getContentToken() {
+
+        String token = pdfBlob.getDigest();
+        if (StringUtils.isBlank(token) && pdfBlob instanceof ManagedBlob managed) {
+            token = managed.getKey();
+        }
+
+        if (StringUtils.isBlank(token)) {
+            log.debug("Blob \"{}\" has no digest and no storage key, caching disabled.", pdfBlob.getFilename());
+            return null;
+        }
+
+        return token;
+    }
+
+    /**
+     * Build a cache key from the content token plus the given rendering discriminator.
      * <p>
      * Returns {@code null} when the blob cannot be identified by content: caching on a weaker key
      * (file name and length, say) could serve another document's images.
@@ -306,26 +332,21 @@ public class PDFToImages {
      */
     protected String buildCacheKey(String renderingSuffix) {
 
-        String key = pdfBlob.getDigest();
-        if (StringUtils.isBlank(key) && pdfBlob instanceof ManagedBlob managed) {
-            key = managed.getKey();
-        }
+        String token = getContentToken();
 
-        if (StringUtils.isBlank(key)) {
-            log.debug("Blob \"{}\" has no digest and no storage key, caching disabled.", pdfBlob.getFilename());
-            return null;
-        }
-
-        return key + renderingSuffix;
+        return token == null ? null : token + renderingSuffix;
     }
 
     /**
      * Cache key of the whole thumbnails list. The rendering parameters are part of the key: the very same
      * PDF rendered at another size or another resolution is a different cache entry.
+     * <p>
+     * Returns {@code null} when the blob cannot be identified by content, in which case nothing is cached.
+     * Also used as the base of the HTTP ETag served by the REST endpoint.
      *
      * @since 2025.6
      */
-    protected String getThumbnailsCacheKey() {
+    public String getThumbnailsCacheKey() {
         return buildCacheKey("-thumbs-" + width + "x" + height + "-" + dpi);
     }
 
@@ -453,6 +474,34 @@ public class PDFToImages {
                 store.remove(cacheKey);
             }
         }
+    }
+
+    /**
+     * Return the thumbnail of a single page, served from the cache whenever possible.
+     *
+     * @param pageNum the page, starting at 1
+     * @return the JPEG thumbnail of that page
+     * @throws IllegalArgumentException if the page is out of the document
+     * @since 2025.6
+     */
+    public Blob getThumbnail(int pageNum) {
+
+        List<Blob> thumbnails = getFromCache(getTransientStore(), getThumbnailsCacheKey());
+
+        if (thumbnails == null) {
+            /*
+             * Cache miss: render the whole document at once and repopulate. Rendering only the requested
+             * page would mean one Loader.loadPDF() per page, and above all one getCloseableFile() per
+             * page, which re-downloads the entire PDF from the blob store every time. On a 20-page PDF
+             * served page by page, that would be 20 downloads and 20 full parses instead of one.
+             */
+            log.debug("Thumbnails cache miss on page {}, rendering the whole document.", pageNum);
+            thumbnails = createThumbnails();
+        }
+
+        PDFTools.validatePageNumber(pageNum, thumbnails.size(), String.valueOf(pageNum));
+
+        return thumbnails.get(pageNum - 1);
     }
 
     /**

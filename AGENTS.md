@@ -23,7 +23,7 @@ mvn -pl nuxeo-labs-pdf-toolkit-core test -Dtest=TestOperationsDestinations#shoul
 - Requires network access to `packages.nuxeo.com` (maven-public **and** maven-private) and
   `connect.nuxeo.com`.
 - No CI, no formatter config, no lint step. `mvn clean install` is the whole gate.
-- 36 tests across 3 classes, all green, ~35 s. A failure is a real regression, not flakiness.
+- 56 tests across 4 classes, all green, ~45 s. A failure is a real regression, not flakiness.
 - `target/` may hold stale artifacts from an old `lts2023` build — never trust it without a
   `clean`.
 
@@ -62,9 +62,43 @@ mvn -pl nuxeo-labs-pdf-toolkit-core test -Dtest=TestOperationsDestinations#shoul
   in-memory model and we always save to a fresh temp blob. A defensive full-document copy was
   removed on purpose (it tripled the heap usage) — **do not reintroduce a `cloneDocument()`**.
 - Operations live in `nuxeo.labs.pdf.toolkit.operations`, IDs prefixed `PDFLabs.`, category
-  `CAT_CONVERSION`, each with two `@OperationMethod` overloads (`DocumentModel` and `Blob`).
-  A new operation must be added to `OSGI-INF/operations-contrib.xml`; the MANIFEST already
-  lists that file.
+  `CAT_CONVERSION`, each with two `@OperationMethod` overloads (`DocumentModel` and `Blob`) —
+  except `PDFLabs.PrepareThumbnails`, which needs a document id to build URLs and therefore only
+  accepts a `DocumentModel`. A new operation must be added to `OSGI-INF/operations-contrib.xml`;
+  the MANIFEST already lists that file.
+
+### Thumbnails are served by a REST endpoint, not as base64
+
+`PDFLabs.PrepareThumbnails` + `nuxeo.labs.pdf.toolkit.rest.PDFToolkitEndpoint` replace the base64
+transport for the UI. `PDFLabs.GetThumbnails` is kept for blob inputs and scripting.
+
+- The endpoint is a **WebEngine module**, declared by the `Nuxeo-WebModule` header in the core
+  MANIFEST. No OSGi fragment, no extra module. Served at `/nuxeo/site/pdftoolkit/`.
+- **In tests the WebEngine servlet is mapped on `/*`**, so the very same route is at
+  `<httpUrl>/pdftoolkit`, without `site/`. Do not "fix" one to match the other.
+- The two-phase split is the whole point and must be preserved: the operation opens, parses and
+  renders the PDF **once**, the endpoint only reads the cache. Making the endpoint render the
+  single page it was asked for would mean one `Loader.loadPDF()` **and one
+  `getCloseableFile()` per page** — that is one full download of the PDF per page on a remote
+  blob store. `PDFToImages.getThumbnail()` therefore renders the whole document on a cache miss.
+- **Never return a `Blob` as the JAX-RS entity if you set headers**: the platform `BlobWriter`
+  starts with `httpHeaders.clear()` and delegates to the `DownloadService`, wiping the `ETag`,
+  the `Cache-Control` and the content type. Stream `blob.getStream()` instead. This cost an hour
+  of debugging, the symptom is a 200 with none of the headers you set.
+- **The thumbnail URL must carry the content token** (`&v=<digest>`, produced by
+  `PDFToImages.getContentToken()`). The path only holds the document id, so without the token
+  replacing `file:content` yields the very same URLs. Combined with a long `max-age` the browser
+  then keeps serving the previous thumbnails: reordering a PDF and reopening the dialog showed
+  the pages in their old order. A non-zero `max-age` is only legitimate on a content-addressed
+  URL — **an `ETag` alone protects from nothing**, since `max-age` tells the browser not to
+  revalidate at all, so the `ETag` is never compared. `cacheControl(versionedUrl)` enforces this:
+  `max-age` with a token, `no-cache` without.
+- The token is deliberately **not** used to select what is served: the endpoint always returns the
+  current content of the document. It only drives the cache policy.
+- The endpoint resolves the document through `getContext().getCoreSession()`: the read permission
+  is enforced by the repository, not by us. Keep it that way.
+- Rendering parameters arrive in the query string, so they go through the same setters as the
+  operation and are clamped identically. An URL is no more trustable than an operation param.
 
 ### Temporary blobs — the only correct way
 
@@ -143,7 +177,10 @@ Documented in `README.md` too — update both.
   - `TestOperationsDestinations` — the 4 destinations, plus the negative tests on
     `destinationJsonStr`. Always assert `checkOriginalNotModified()` when the operation is not
     supposed to touch the source.
-  - `TestTheToolkit` — caching, rendering bounds, blob validation.
+  - `TestTheToolkit` — caching, rendering bounds, blob validation, single page thumbnail and
+    `PDFLabs.PrepareThumbnails`, and the content token in the generated URLs.
+  - `TestPDFToolkitEndpoint` — the REST endpoint over HTTP, under `WebEngineFeature` (not
+    `AutomationFeature`: the two do not mix well in one class) with `HttpClientTestRule`.
 - `TestTheToolkit` wipes the store in `@Before` via `((TransientStoreProvider) store).removeAll()`.
   Use `TransientStoreProvider`, **not** `AbstractTransientStore`: the default implementation is
   `KeyValueBlobTransientStore`, which does not extend it.
