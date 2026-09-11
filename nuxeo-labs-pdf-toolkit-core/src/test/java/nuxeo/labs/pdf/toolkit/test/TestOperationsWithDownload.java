@@ -53,6 +53,8 @@ import org.nuxeo.runtime.test.runner.Features;
 import org.nuxeo.runtime.test.runner.FeaturesRunner;
 
 import jakarta.inject.Inject;
+import nuxeo.labs.pdf.toolkit.PDFPageExtractor;
+import nuxeo.labs.pdf.toolkit.PDFPageOrdering;
 import nuxeo.labs.pdf.toolkit.PDFToImages;
 import nuxeo.labs.pdf.toolkit.operations.PDFJpegimagePreviewOp;
 import nuxeo.labs.pdf.toolkit.operations.PDFPageExtractorOp;
@@ -61,8 +63,7 @@ import nuxeo.labs.pdf.toolkit.operations.PDFPageRemoverOp;
 import nuxeo.labs.pdf.toolkit.operations.PDFThumbnailsOp;
 
 /**
- * This class test operaitions without using the destinationJsonStr parameter, which leads to "download" by default.
- * 
+ * This class tests operations without using the destinationJsonStr parameter, which leads to "download" by default.
  */
 @RunWith(FeaturesRunner.class)
 @Features({ AutomationFeature.class })
@@ -84,28 +85,49 @@ public class TestOperationsWithDownload {
     @Inject
     protected AutomationService automationService;
 
+    protected File testPdfFile() {
+        return FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
+    }
+
+    protected Blob testPdfBlob() {
+        return new FileBlob(testPdfFile());
+    }
+
+    protected String extractText(File f) throws Exception {
+        try (PDDocument pdf = Loader.loadPDF(f)) {
+            return extractText(pdf);
+        }
+    }
+
+    protected String extractText(PDDocument pdf) throws Exception {
+        PDFTextStripper stripper = new PDFTextStripper();
+        stripper.setSortByPosition(true);
+        return stripper.getText(pdf);
+    }
+
+    protected int pageCount(File f) throws Exception {
+        try (PDDocument pdf = Loader.loadPDF(f)) {
+            return pdf.getNumberOfPages();
+        }
+    }
+
     @Test
     public void shouldGetThumbnails() throws Exception {
 
-        File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
-        Blob b = new FileBlob(f);
+        File f = testPdfFile();
 
         OperationContext ctx = new OperationContext(session);
-        ctx.setInput(b);
+        ctx.setInput(new FileBlob(f));
 
         Blob result = (Blob) automationService.run(ctx, PDFThumbnailsOp.ID);
         assertNotNull(result);
 
-        String arrayStr = result.getString();
-        JSONArray array = new JSONArray(arrayStr);
-
-        PDDocument sourcePdf = Loader.loadPDF(f);
-        int pageCount = sourcePdf.getNumberOfPages();
-        assertEquals(array.length(), pageCount);
+        JSONArray array = new JSONArray(result.getString());
+        assertEquals(TEST_PDF_PAGE_COUNT, array.length());
+        assertEquals(pageCount(f), array.length());
 
         // Check the first item
-        String base64 = array.getString(0);
-        byte[] bytes = Base64.getDecoder().decode(base64);
+        byte[] bytes = Base64.getDecoder().decode(array.getString(0));
         Blob blob = Blobs.createBlob(bytes);
         ImageInfo info = Framework.getService(ImagingService.class).getImageInfo(blob);
         assertEquals("jpeg", info.getFormat().toLowerCase());
@@ -117,55 +139,42 @@ public class TestOperationsWithDownload {
     @Test
     public void shouldRemovePages() throws Exception {
 
-        File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
-        Blob b = new FileBlob(f);
+        File f = testPdfFile();
 
-        PDDocument sourcePdf = Loader.loadPDF(f);
-
-        PDFTextStripper stripper = new PDFTextStripper();
-        stripper.setSortByPosition(true);
-        String text = stripper.getText(sourcePdf);
+        String text = extractText(f);
         int originalIndex = text.indexOf(TEXT_PAGE_3);
-        assertTrue(originalIndex > -1); // Did someone changed the test pdf?
+        assertTrue(originalIndex > -1); // Did someone change the test pdf?
 
         OperationContext ctx = new OperationContext(session);
-        ctx.setInput(b);
+        ctx.setInput(new FileBlob(f));
         Map<String, Object> params = new HashMap<>();
         params.put("pageRange", "2-4, 8"); // remove 4 pages
 
         Blob result = (Blob) automationService.run(ctx, PDFPageRemoverOp.ID, params);
         assertNotNull(result);
 
-        sourcePdf = Loader.loadPDF(result.getFile());
-        int pageCount = sourcePdf.getNumberOfPages();
-        assertEquals(pageCount, 6);
+        try (PDDocument resultPdf = Loader.loadPDF(result.getFile())) {
+            assertEquals(6, resultPdf.getNumberOfPages());
+            assertEquals(-1, extractText(resultPdf).indexOf(TEXT_PAGE_3));
+        }
 
-        stripper = new PDFTextStripper();
-        stripper.setSortByPosition(true);
-        text = stripper.getText(sourcePdf);
-        int newIndex = text.indexOf(TEXT_PAGE_3);
-        assertEquals(-1, newIndex);
-
+        // Check original not modified
+        assertEquals(TEST_PDF_PAGE_COUNT, pageCount(f));
     }
 
     @Test
     public void shouldExtractPages() throws Exception {
 
-        File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
-        Blob b = new FileBlob(f);
+        File f = testPdfFile();
 
-        PDDocument sourcePdf = Loader.loadPDF(f);
-        int originalPageCount = sourcePdf.getNumberOfPages();
-        // assertEquals(10, originalPageCount);
+        int originalPageCount = pageCount(f);
+        assertEquals(TEST_PDF_PAGE_COUNT, originalPageCount);
 
-        PDFTextStripper stripper = new PDFTextStripper();
-        stripper.setSortByPosition(true);
-        String text = stripper.getText(sourcePdf);
-        int originalIndex = text.indexOf(TEXT_PAGE_3);
-        assertTrue(originalIndex > -1); // Did someone changed the test pdf?
+        int originalIndex = extractText(f).indexOf(TEXT_PAGE_3);
+        assertTrue(originalIndex > -1); // Did someone change the test pdf?
 
         OperationContext ctx = new OperationContext(session);
-        ctx.setInput(b);
+        ctx.setInput(new FileBlob(f));
         Map<String, Object> params = new HashMap<>();
         params.put("pageRange", "2-4, 8"); // Extract 4 pages
 
@@ -173,41 +182,41 @@ public class TestOperationsWithDownload {
         assertNotNull(result);
 
         // Check original not modified
-        sourcePdf = Loader.loadPDF(f);
-        int newPageCount = sourcePdf.getNumberOfPages();
-        assertEquals(originalPageCount, newPageCount);
+        assertEquals(originalPageCount, pageCount(f));
 
         // New PDF has 4 pages
-        PDDocument extractedPdf = Loader.loadPDF(result.getFile());
-        int pageCount = extractedPdf.getNumberOfPages();
-        assertEquals(pageCount, 4);
+        try (PDDocument extractedPdf = Loader.loadPDF(result.getFile())) {
+            assertEquals(4, extractedPdf.getNumberOfPages());
+            assertTrue(extractText(extractedPdf).indexOf(TEXT_PAGE_3) < originalIndex);
+        }
+    }
 
-        stripper = new PDFTextStripper();
-        stripper.setSortByPosition(true);
-        text = stripper.getText(extractedPdf);
-        int newIndex = text.indexOf(TEXT_PAGE_3);
-        assertTrue(newIndex < originalIndex);
+    @Test
+    public void shouldExtractPagesInDocumentOrderWhateverTheRangeOrder() throws Exception {
 
+        // "8,2-4" and "2-4,8" must both produce pages 2, 3, 4, 8.
+        Blob fromUnordered = new PDFPageExtractor(testPdfBlob()).extractPages("8,2-4");
+        Blob fromOrdered = new PDFPageExtractor(testPdfBlob()).extractPages("2-4,8");
+
+        try (PDDocument a = Loader.loadPDF(fromUnordered.getFile());
+                PDDocument b = Loader.loadPDF(fromOrdered.getFile())) {
+            assertEquals(4, a.getNumberOfPages());
+            assertEquals(4, b.getNumberOfPages());
+            assertEquals(extractText(a), extractText(b));
+        }
     }
 
     @Test
     public void shouldReorganizePages() throws Exception {
 
-        File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
-        Blob b = new FileBlob(f);
+        File f = testPdfFile();
 
-        PDDocument sourcePdf = Loader.loadPDF(f);
-        int originalPageCount = sourcePdf.getNumberOfPages();
-        // assertEquals(10, originalPageCount);
-
-        PDFTextStripper stripper = new PDFTextStripper();
-        stripper.setSortByPosition(true);
-        String text = stripper.getText(sourcePdf);
-        int originalIndex = text.indexOf(TEXT_PAGE_3);
-        assertTrue(originalIndex > -1); // Did someone changed the test pdf?
+        int originalPageCount = pageCount(f);
+        int originalIndex = extractText(f).indexOf(TEXT_PAGE_3);
+        assertTrue(originalIndex > -1); // Did someone change the test pdf?
 
         OperationContext ctx = new OperationContext(session);
-        ctx.setInput(b);
+        ctx.setInput(new FileBlob(f));
         Map<String, Object> params = new HashMap<>();
         params.put("pageOrderJsonStr", "[3, 1, 6, 2, 4, 5, 7, 8, 9, 10]");// Page 3 first
 
@@ -215,31 +224,29 @@ public class TestOperationsWithDownload {
         assertNotNull(result);
 
         // Check original not modified
-        sourcePdf = Loader.loadPDF(f);
-        int newPageCount = sourcePdf.getNumberOfPages();
-        assertEquals(originalPageCount, newPageCount);
+        assertEquals(originalPageCount, pageCount(f));
 
-        // New PDF has 10 pages
-        PDDocument reorganizedPdf = Loader.loadPDF(result.getFile());
-        int pageCount = reorganizedPdf.getNumberOfPages();
-        assertEquals(pageCount, originalPageCount);
+        try (PDDocument reorganizedPdf = Loader.loadPDF(result.getFile())) {
+            assertEquals(originalPageCount, reorganizedPdf.getNumberOfPages());
+            assertTrue(extractText(reorganizedPdf).indexOf(TEXT_PAGE_3) < originalIndex);
+        }
+    }
 
-        stripper = new PDFTextStripper();
-        stripper.setSortByPosition(true);
-        text = stripper.getText(reorganizedPdf);
-        int newIndex = text.indexOf(TEXT_PAGE_3);
-        assertTrue(newIndex < originalIndex);
+    @Test
+    public void shouldReorganizeToFewerPages() throws Exception {
 
+        Blob result = new PDFPageOrdering(testPdfBlob()).reorganizePdf(new int[] { 3, 1, 4, 2 });
+
+        try (PDDocument pdf = Loader.loadPDF(result.getFile())) {
+            assertEquals(4, pdf.getNumberOfPages());
+        }
     }
 
     @Test
     public void shouldGetJpegImagePreview() throws Exception {
 
-        File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
-        Blob b = new FileBlob(f);
-
         OperationContext ctx = new OperationContext(session);
-        ctx.setInput(b);
+        ctx.setInput(testPdfBlob());
         Map<String, Object> params = new HashMap<>();
         params.put("pageNumber", 3);
 
@@ -250,7 +257,8 @@ public class TestOperationsWithDownload {
         String fileName = result.getFilename();
         assertTrue(StringUtils.isNotBlank(fileName));
         fileName = fileName.toLowerCase();
-        assertTrue(fileName.endsWith(".jpg") || fileName.endsWith(".jpeg"));
+        assertTrue("Unexpected preview file name: " + fileName,
+                fileName.endsWith(".jpg") || fileName.endsWith(".jpeg"));
 
         // More check it really is a JPEG.
         ImageInfo info = Framework.getService(ImagingService.class).getImageInfo(result);
@@ -258,5 +266,53 @@ public class TestOperationsWithDownload {
         assertTrue(info.getHeight() <= PDFToImages.PREVIEW_PAGE_MAX_SIZE);
         assertTrue(info.getWidth() <= PDFToImages.PREVIEW_PAGE_MAX_SIZE);
 
+    }
+
+    // ========================================
+    // Negative tests
+    // ========================================
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectPageAboveDocumentPageCount() {
+        new PDFPageExtractor(testPdfBlob()).extractPages("11");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectZeroPage() {
+        new PDFPageExtractor(testPdfBlob()).extractPages("0");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectReversedRange() {
+        new PDFPageExtractor(testPdfBlob()).extractPages("8-2");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectEmptyToken() {
+        new PDFPageExtractor(testPdfBlob()).extractPages("2,,4");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectNonNumericRange() {
+        new PDFPageExtractor(testPdfBlob()).extractPages("two");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectBlankRange() {
+        new PDFPageExtractor(testPdfBlob()).extractPages("  ");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectDuplicatePageInNewOrder() {
+        new PDFPageOrdering(testPdfBlob()).reorganizePdf(new int[] { 1, 2, 2 });
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectOutOfBoundsPageInNewOrder() {
+        new PDFPageOrdering(testPdfBlob()).reorganizePdf(new int[] { 1, 2, 42 });
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectEmptyNewOrder() {
+        new PDFPageOrdering(testPdfBlob()).reorganizePdf(new int[0]);
     }
 }

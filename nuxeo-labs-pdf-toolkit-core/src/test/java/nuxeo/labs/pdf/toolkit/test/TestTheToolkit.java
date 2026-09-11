@@ -18,12 +18,16 @@
  */
 package nuxeo.labs.pdf.toolkit.test;
 
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 import java.io.File;
 import java.util.Set;
 
+import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.nuxeo.common.utils.FileUtils;
@@ -31,27 +35,31 @@ import org.nuxeo.ecm.automation.core.util.BlobList;
 import org.nuxeo.ecm.automation.test.AutomationFeature;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.CoreSession;
+import org.nuxeo.ecm.core.api.DocumentModel;
+import org.nuxeo.ecm.core.api.NuxeoException;
 import org.nuxeo.ecm.core.api.impl.blob.FileBlob;
 import org.nuxeo.ecm.core.test.DefaultRepositoryInit;
 import org.nuxeo.ecm.core.test.annotations.Granularity;
 import org.nuxeo.ecm.core.test.annotations.RepositoryConfig;
-import org.nuxeo.ecm.core.transientstore.AbstractTransientStore;
 import org.nuxeo.ecm.core.transientstore.api.TransientStore;
+import org.nuxeo.ecm.core.transientstore.api.TransientStoreProvider;
 import org.nuxeo.ecm.core.transientstore.api.TransientStoreService;
+import org.nuxeo.ecm.platform.picture.api.ImageInfo;
+import org.nuxeo.ecm.platform.picture.api.ImagingService;
 import org.nuxeo.runtime.api.Framework;
 import org.nuxeo.runtime.test.runner.Deploy;
 import org.nuxeo.runtime.test.runner.Features;
 import org.nuxeo.runtime.test.runner.FeaturesRunner;
+import org.nuxeo.runtime.test.runner.TransactionalFeature;
 
 import jakarta.inject.Inject;
 import nuxeo.labs.pdf.toolkit.PDFToImages;
 
 /**
- * Test some features. About everything is tested in TestOperations
- * 
+ * Test the caching and the rendering bounds. About everything else is tested in TestOperations*.
  */
 @RunWith(FeaturesRunner.class)
-@Features({AutomationFeature.class})
+@Features({ AutomationFeature.class })
 @RepositoryConfig(init = DefaultRepositoryInit.class, cleanup = Granularity.METHOD)
 @Deploy("org.nuxeo.ecm.platform.picture.core")
 @Deploy("org.nuxeo.ecm.core.convert")
@@ -67,31 +75,192 @@ public class TestTheToolkit {
     @Inject
     protected CoreSession session;
 
-    @Test
-    public void shouldUseTransientStore() throws Exception {
-        
-        TransientStoreService transientStoreService = Framework.getService(TransientStoreService.class);
-        TransientStore store = transientStoreService.getStore(PDFToImages.TRANSIENT_STORE_NAME);
-        assertNotNull(store);
-        // We use the default TransientStore
-        AbstractTransientStore storeAbstract = (AbstractTransientStore) store;
-        Set<String> keys = storeAbstract.keySet();
-        assertTrue(keys == null || keys.size() == 0);
+    @Inject
+    protected TransactionalFeature txFeature;
+
+    protected TransientStore store;
+
+    @Before
+    public void cleanCache() {
+        store = Framework.getService(TransientStoreService.class).getStore(PDFToImages.TRANSIENT_STORE_NAME);
+        // Make every test independent from the execution order.
+        ((TransientStoreProvider) store).removeAll();
+    }
+
+    protected Set<String> cacheKeys() {
+        return ((TransientStoreProvider) store).keySet();
+    }
+
+    /**
+     * Caching requires a blob that can be identified by content, so we need a blob stored in the repository
+     * (it then carries a digest), not a bare FileBlob.
+     */
+    protected Blob createTestDocBlob() {
 
         File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
-        Blob b = new FileBlob(f);
-        
-        PDFToImages pdfThumbnails = new PDFToImages(b);
-        BlobList thumbnails = pdfThumbnails.createThumbnails();
-        
-        keys = storeAbstract.keySet();
-        assertTrue(keys.size() == 1);
-        
-        pdfThumbnails = new PDFToImages(b);
-        thumbnails = pdfThumbnails.createThumbnails();
-        
-        keys = storeAbstract.keySet();
-        assertTrue(keys.size() == 1);
-        
+
+        DocumentModel doc = session.createDocumentModel("/", "testFile", "File");
+        doc.setPropertyValue("file:content", new FileBlob(f));
+        doc = session.createDocument(doc);
+        txFeature.nextTransaction();
+
+        doc = session.getDocument(doc.getRef());
+        Blob blob = (Blob) doc.getPropertyValue("file:content");
+        assertNotNull(blob);
+
+        return blob;
+    }
+
+    @Test
+    public void shouldUseTransientStore() throws Exception {
+
+        assertTrue(cacheKeys().isEmpty());
+
+        Blob b = createTestDocBlob();
+
+        BlobList thumbnails = new PDFToImages(b).createThumbnails();
+        assertEquals(TEST_PDF_PAGE_COUNT, thumbnails.size());
+        assertEquals(1, cacheKeys().size());
+
+        // Same blob, same parameters: served from the cache, no new entry.
+        thumbnails = new PDFToImages(b).createThumbnails();
+        assertEquals(TEST_PDF_PAGE_COUNT, thumbnails.size());
+        assertEquals(1, cacheKeys().size());
+    }
+
+    @Test
+    public void shouldNotCacheBlobWithoutDigest() throws Exception {
+
+        // A bare FileBlob has no digest and no storage key: caching must be disabled rather than
+        // fall back on a weak key that could collide with another document.
+        File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
+        BlobList thumbnails = new PDFToImages(new FileBlob(f)).createThumbnails();
+
+        assertEquals(TEST_PDF_PAGE_COUNT, thumbnails.size());
+        assertTrue(cacheKeys().isEmpty());
+    }
+
+    @Test
+    public void shouldNotServeCachedThumbnailsOfAnotherSize() throws Exception {
+
+        Blob b = createTestDocBlob();
+        ImagingService imaging = Framework.getService(ImagingService.class);
+
+        BlobList small = new PDFToImages(b).createThumbnails(120, 120);
+        ImageInfo smallInfo = imaging.getImageInfo(small.get(0));
+        assertTrue(smallInfo.getWidth() <= 120);
+        assertTrue(smallInfo.getHeight() <= 120);
+
+        BlobList large = new PDFToImages(b).createThumbnails(700, 700);
+        ImageInfo largeInfo = imaging.getImageInfo(large.get(0));
+        assertTrue("Cache key must include the requested size", largeInfo.getHeight() > 120);
+        assertTrue(largeInfo.getWidth() <= 700);
+        assertTrue(largeInfo.getHeight() <= 700);
+
+        // Two different renderings, so two different cache entries.
+        assertEquals(2, cacheKeys().size());
+    }
+
+    @Test
+    public void shouldIgnorePoisonedCacheEntry() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        BlobList thumbnails = new PDFToImages(b).createThumbnails();
+        assertEquals(TEST_PDF_PAGE_COUNT, thumbnails.size());
+
+        Set<String> keys = cacheKeys();
+        assertEquals(1, keys.size());
+        String key = keys.iterator().next();
+
+        /*
+         * Simulate what a failed run used to leave behind: an entry that exists and is flagged completed,
+         * but holds no blob at all. It must be ignored and recomputed, not served as an empty result.
+         */
+        store.remove(key);
+        store.setCompleted(key, false);
+        store.setCompleted(key, true);
+        assertTrue(store.exists(key));
+        assertTrue(store.getBlobs(key).isEmpty());
+
+        thumbnails = new PDFToImages(b).createThumbnails();
+        assertEquals(TEST_PDF_PAGE_COUNT, thumbnails.size());
+    }
+
+    @Test
+    public void shouldIgnoreUnfinishedCacheEntry() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        BlobList thumbnails = new PDFToImages(b).createThumbnails();
+        String key = cacheKeys().iterator().next();
+
+        // A concurrent request that only reserved the key must not be seen as a usable result.
+        store.remove(key);
+        store.setCompleted(key, false);
+        assertTrue(store.exists(key));
+        assertFalse(store.isCompleted(key));
+
+        thumbnails = new PDFToImages(b).createThumbnails();
+        assertEquals(TEST_PDF_PAGE_COUNT, thumbnails.size());
+    }
+
+    @Test
+    public void shouldReturnSamePreviewWhetherCachedOrNot() throws Exception {
+
+        Blob b = createTestDocBlob();
+        ImagingService imaging = Framework.getService(ImagingService.class);
+
+        Blob first = new PDFToImages(b).getJpegPreviewImage(3);
+        ImageInfo firstInfo = imaging.getImageInfo(first);
+        assertTrue(firstInfo.getWidth() <= PDFToImages.PREVIEW_PAGE_MAX_SIZE);
+        assertTrue(firstInfo.getHeight() <= PDFToImages.PREVIEW_PAGE_MAX_SIZE);
+
+        // Second call is a cache hit: it must return the very same image, not the full size one.
+        Blob second = new PDFToImages(b).getJpegPreviewImage(3);
+        ImageInfo secondInfo = imaging.getImageInfo(second);
+        assertEquals(firstInfo.getWidth(), secondInfo.getWidth());
+        assertEquals(firstInfo.getHeight(), secondInfo.getHeight());
+    }
+
+    @Test
+    public void shouldClampRenderingParameters() throws Exception {
+
+        PDFToImages tool = new PDFToImages(createTestDocBlob());
+
+        tool.setDpi(99999);
+        tool.setSize(99999, 99999);
+
+        BlobList thumbnails = tool.createThumbnails();
+        assertEquals(TEST_PDF_PAGE_COUNT, thumbnails.size());
+
+        ImageInfo info = Framework.getService(ImagingService.class).getImageInfo(thumbnails.get(0));
+        assertTrue("Thumbnail size must be clamped to MAX_THUMBNAIL_SIZE",
+                info.getWidth() <= PDFToImages.MAX_THUMBNAIL_SIZE);
+        assertTrue(info.getHeight() <= PDFToImages.MAX_THUMBNAIL_SIZE);
+    }
+
+    @Test
+    public void shouldRejectNonPdfBlob() throws Exception {
+
+        Blob notAPdf = org.nuxeo.ecm.core.api.Blobs.createBlob("I am not a PDF", "text/plain");
+        try {
+            new PDFToImages(notAPdf);
+            fail("Should have rejected a non-PDF blob");
+        } catch (NuxeoException e) {
+            assertTrue(e.getMessage().contains("is not a PDF"));
+        }
+    }
+
+    @Test
+    public void shouldRejectDocumentWithoutBlob() throws Exception {
+
+        DocumentModel empty = session.createDocument(session.createDocumentModel("/", "empty", "File"));
+        try {
+            new PDFToImages(empty);
+            fail("Should have rejected a document with no blob");
+        } catch (NuxeoException e) {
+            assertTrue(e.getMessage().contains("has no blob"));
+        }
     }
 }
