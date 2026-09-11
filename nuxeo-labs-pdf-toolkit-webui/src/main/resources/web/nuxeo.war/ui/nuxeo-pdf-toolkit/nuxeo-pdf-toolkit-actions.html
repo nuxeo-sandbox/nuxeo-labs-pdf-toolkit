@@ -156,7 +156,9 @@ Action buttons for PDF toolkit operations with destination selection dialog.
           </div>
         </div>
 
-        <div class="destination-option" on-tap="_selectDestination" data-destination="derivative">
+        <!-- The destinations below write to the repository: hide them when the user cannot write -->
+        <div class="destination-option" on-tap="_selectDestination" data-destination="derivative"
+             hidden$="[[!_canWrite]]">
           <iron-icon icon="icons:description"></iron-icon>
           <div class="destination-option-content">
             <div class="destination-option-title">[[i18n('pdftoolkit.destination.derivative')]]</div>
@@ -169,15 +171,16 @@ Action buttons for PDF toolkit operations with destination selection dialog.
             <paper-checkbox id="resetLifecycleState" checked="{{_resetLifeCycleState}}">[[i18n('pdftoolkit.destination.derivative.resetLifeCycle')]]</paper-checkbox>
           </div>
           <div class="derivative-option">
-            <paper-input id="derivativeTitle" 
-                         label="[[i18n('pdftoolkit.destination.derivative.title')]]" 
-                         value="{{_derivativeTitle}}" 
+            <paper-input id="derivativeTitle"
+                         label="[[i18n('pdftoolkit.destination.derivative.title')]]"
+                         value="{{_derivativeTitle}}"
                          placeholder="[[i18n('pdftoolkit.destination.derivative.title.placeholder')]]">
             </paper-input>
           </div>
         </div>
 
-        <div class="destination-option" on-tap="_selectDestination" data-destination="attachments">
+        <div class="destination-option" on-tap="_selectDestination" data-destination="attachments"
+             hidden$="[[!_canWrite]]">
           <iron-icon icon="icons:attachment"></iron-icon>
           <div class="destination-option-content">
             <div class="destination-option-title">[[i18n('pdftoolkit.destination.attachments')]]</div>
@@ -185,7 +188,8 @@ Action buttons for PDF toolkit operations with destination selection dialog.
           </div>
         </div>
 
-        <div class="destination-option" on-tap="_selectDestination" data-destination="newFile">
+        <div class="destination-option" on-tap="_selectDestination" data-destination="newFile"
+             hidden$="[[!_canWrite]]">
           <iron-icon icon="icons:save"></iron-icon>
           <div class="destination-option-content">
             <div class="destination-option-title">[[i18n('pdftoolkit.destination.newFile')]]</div>
@@ -208,11 +212,11 @@ Action buttons for PDF toolkit operations with destination selection dialog.
       <div class="destination-dialog-actions">
         <paper-button on-tap="_cancelDestination">
           <iron-icon icon="icons:close"></iron-icon>
-          [[i18n('pdftoolkit.label.close')]]
+          [[i18n('pdftoolkit.label.cancel')]]
         </paper-button>
         <paper-button class="primary" on-tap="_confirmDestination" disabled="[[!_selectedDestination]]">
           <iron-icon icon="icons:check"></iron-icon>
-          OK
+          [[i18n('pdftoolkit.label.ok')]]
         </paper-button>
       </div>
     </paper-dialog>
@@ -237,6 +241,11 @@ Action buttons for PDF toolkit operations with destination selection dialog.
         hasReordered: {
           type: Boolean,
           value: false
+        },
+
+        _canWrite: {
+          type: Boolean,
+          computed: '_computeCanWrite(document)'
         },
 
         _currentAction: {
@@ -275,21 +284,32 @@ Action buttons for PDF toolkit operations with destination selection dialog.
         }
       },
 
+      /*
+       * Mirrors FiltersBehavior.hasPermission. When the permissions enricher is not available we cannot
+       * decide, so we keep the options visible: the server remains the actual authority anyway.
+       */
+      _computeCanWrite: function(doc) {
+        if (!doc || !doc.contextParameters || !doc.contextParameters.permissions) {
+          return true;
+        }
+        return doc.contextParameters.permissions.indexOf('Write') !== -1;
+      },
+
       _onExtractClick: function() {
         this._currentAction = 'extract';
-        this._destinationDialogTitle = 'Extract Pages - Choose Destination';
+        this._destinationDialogTitle = this.i18n('pdftoolkit.dialog.extract.title');
         this._showDestinationDialog();
       },
 
       _onRemoveClick: function() {
         this._currentAction = 'remove';
-        this._destinationDialogTitle = 'Remove Pages - Choose Destination';
+        this._destinationDialogTitle = this.i18n('pdftoolkit.dialog.remove.title');
         this._showDestinationDialog();
       },
 
       _onReorderClick: function() {
         this._currentAction = 'reorder';
-        this._destinationDialogTitle = 'Reorder Pages - Choose Destination';
+        this._destinationDialogTitle = this.i18n('pdftoolkit.dialog.reorder.title');
         this._showDestinationDialog();
       },
 
@@ -311,7 +331,7 @@ Action buttons for PDF toolkit operations with destination selection dialog.
 
       _clearDestinationSelections: function() {
         var options = this.root.querySelectorAll('.destination-option');
-        options.forEach(function(option) {
+        Array.prototype.forEach.call(options, function(option) {
           option.classList.remove('selected');
         });
       },
@@ -354,8 +374,8 @@ Action buttons for PDF toolkit operations with destination selection dialog.
             break;
 
           case 'derivative':
-            this.fire('action-complete', { 
-              action: action, 
+            this.fire('action-complete', {
+              action: action,
               destination: 'derivative',
               resetLifeCycle: this._resetLifeCycleState,
               derivativeTitle: this._derivativeTitle
@@ -367,8 +387,8 @@ Action buttons for PDF toolkit operations with destination selection dialog.
             break;
 
           case 'newFile':
-            this.fire('action-complete', { 
-              action: action, 
+            this.fire('action-complete', {
+              action: action,
               destination: 'newFile',
               createVersion: this._createVersion,
               versionType: this._versionType
@@ -376,7 +396,7 @@ Action buttons for PDF toolkit operations with destination selection dialog.
             break;
         }
       }
-        
+
     });
   </script>
 </dom-module>

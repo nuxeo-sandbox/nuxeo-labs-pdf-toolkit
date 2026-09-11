@@ -17,14 +17,19 @@ limitations under the License.
 
 <link rel="import" href="nuxeo-pdf-toolkit.html">
 
-<!-- Contribution of element 'nuxeo-pdf-toolkit' for slot 'BLOB_ACTIONS' -->
+<!--
+  Contribution of element 'nuxeo-pdf-toolkit' for slot 'DOCUMENT_ACTIONS'.
+  Versions and proxies are excluded: they cannot be modified, and a version has no parent so a
+  derivative cannot be created from it either. Read-only users still get the button, because
+  downloading the result is a legitimate action for them; the write destinations are hidden
+  further down, in nuxeo-pdf-toolkit-actions.
+-->
 <nuxeo-slot-content name="pdfToolkit" slot="DOCUMENT_ACTIONS" order="1">
   <template>
-    <nuxeo-filter document="[[document]]" expression="document &amp;&amp; document.properties &amp;&amp; document.properties[&quot;file:content&quot;] &amp;&amp; document.properties[&quot;file:content&quot;][&quot;mime-type&quot;] &#x3D;&#x3D;&#x3D; &quot;application/pdf&quot;" user="[[user]]">
+    <nuxeo-filter document="[[document]]" user="[[user]]" expression="document &amp;&amp; document.properties &amp;&amp; document.properties[&quot;file:content&quot;] &amp;&amp; document.properties[&quot;file:content&quot;][&quot;mime-type&quot;] === &quot;application/pdf&quot; &amp;&amp; !document.isVersion &amp;&amp; !document.isProxy">
       <template>
         <nuxeo-pdf-toolkit document="[[document]]"></nuxeo-pdf-toolkit>
       </template>
     </nuxeo-filter>
   </template>
 </nuxeo-slot-content>
-

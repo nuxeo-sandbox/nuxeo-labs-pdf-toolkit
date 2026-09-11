@@ -20,36 +20,40 @@ package nuxeo.labs.pdf.toolkit.operations;
 
 import org.json.JSONArray;
 import org.nuxeo.ecm.automation.core.Constants;
-import org.nuxeo.ecm.automation.core.annotations.Context;
 import org.nuxeo.ecm.automation.core.annotations.Operation;
 import org.nuxeo.ecm.automation.core.annotations.OperationMethod;
 import org.nuxeo.ecm.automation.core.annotations.Param;
 import org.nuxeo.ecm.automation.core.util.BlobList;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.Blobs;
-import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
+import org.nuxeo.ecm.core.api.NuxeoException;
 
 import nuxeo.labs.pdf.toolkit.PDFToImages;
+import nuxeo.labs.pdf.toolkit.PDFTools;
 
 /**
  * An operation that returns a list of jpeg images as base64.
  * <br>
  * There already is a PDF.ConvertToPictures operation, but it returns images with a 300 DPI and they are at the
  * dimension of each page which can sometime be big.
+ *
+ * @since 2025.2
  */
 @Operation(id = PDFThumbnailsOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Get Thumbnails", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
         + " Calculate thumbnails of each page of the input PDF."
         + " Returns a JSON Array (as string) of the ordered thumbnails, jpeg, as base64."
-        + " The operation accepts maxWidth (default 512), maxHeight (default 512) and dpi (default 150) as optional parameters."
-        + " Warning: as all is in memory as base64, don't use big images and/or high dpi.")
+        + " The operation accepts width (default 512, max 2000), height (default 512, max 2000) and dpi"
+        + " (default 150, max 300) as optional parameters. Values above the maximum are silently clamped."
+        + " Warning: as all is in memory as base64, the number of pages is limited (150 by default, see the"
+        + " nuxeo.pdftoolkit.maxPages configuration property).")
 public class PDFThumbnailsOp {
 
     public static final String ID = "PDFLabs.GetThumbnails";
 
-    @Context
-    protected CoreSession session;
+    /** Safety net on top of the page count limit: the whole payload is built in memory. */
+    public static final long MAX_BASE64_PAYLOAD = 20L * 1024 * 1024;
 
     @Param(name = "xpath", required = false)
     protected String xpath = "file:content";
@@ -66,9 +70,7 @@ public class PDFThumbnailsOp {
     @OperationMethod
     public Blob run(DocumentModel doc) {
 
-        Blob b = (Blob) doc.getPropertyValue(xpath);
-
-        return run(b);
+        return run(PDFTools.getBlobFromDocument(doc, xpath));
     }
 
     @OperationMethod
@@ -78,10 +80,16 @@ public class PDFThumbnailsOp {
         pdfThumbnails.setDpi(dpi);
 
         BlobList thumbnails = pdfThumbnails.createThumbnails(width, height);
+
+        long totalBytes = thumbnails.stream().mapToLong(Blob::getLength).sum();
+        if (totalBytes > MAX_BASE64_PAYLOAD) {
+            throw new NuxeoException("Thumbnails payload would be " + totalBytes + " bytes, above the "
+                    + MAX_BASE64_PAYLOAD + " bytes limit. Lower the dpi and/or the thumbnail size.");
+        }
+
         JSONArray array = PDFToImages.toBase64JSONArray(thumbnails);
 
-        String json = array.toString();
-        return Blobs.createJSONBlob(json);
+        return Blobs.createJSONBlob(array.toString());
 
     }
 }

@@ -19,20 +19,23 @@
 package nuxeo.labs.pdf.toolkit.operations;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.nuxeo.ecm.automation.core.Constants;
-import org.nuxeo.ecm.automation.core.annotations.Context;
 import org.nuxeo.ecm.automation.core.annotations.Operation;
 import org.nuxeo.ecm.automation.core.annotations.OperationMethod;
 import org.nuxeo.ecm.automation.core.annotations.Param;
 import org.nuxeo.ecm.core.api.Blob;
-import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
+import org.nuxeo.ecm.core.api.NuxeoException;
 
 import nuxeo.labs.pdf.toolkit.PDFDestinationHandler;
 import nuxeo.labs.pdf.toolkit.PDFPageOrdering;
+import nuxeo.labs.pdf.toolkit.PDFTools;
 
 /**
  * An operation that reorder pages in a PDF.
+ *
+ * @since 2025.2
  */
 @Operation(id = PDFPageOrderingOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Reorder Pages", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
@@ -45,47 +48,44 @@ public class PDFPageOrderingOp {
 
     public static final String ID = "PDFLabs.ReorderPages";
 
-    @Context
-    protected CoreSession session;
-
     @Param(name = "xpath", required = false)
     protected String xpath = "file:content";
 
     @Param(name = "pageOrderJsonStr", required = true)
     protected String pageOrderJsonStr;
-    
-    @Param(name="destinationJsonStr", required=false)
+
+    @Param(name = "destinationJsonStr", required = false)
     protected String destinationJsonStr;
-    
+
     protected DocumentModel doc = null;
 
     @OperationMethod
     public Blob run(DocumentModel doc) {
 
-        Blob b = (Blob) doc.getPropertyValue(xpath);
-
         this.doc = doc;
-        return run(b);
+        return run(PDFTools.getBlobFromDocument(doc, xpath));
     }
 
     @OperationMethod
     public Blob run(Blob blob) {
 
-        PDFPageOrdering pageOrdering = new PDFPageOrdering(blob);
-
-        JSONArray arr = new JSONArray(pageOrderJsonStr);
-        int[] newPageOrder = new int[arr.length()];
-
-        for (int i = 0; i < arr.length(); i++) {
-            newPageOrder[i] = arr.getInt(i);
+        int[] newPageOrder;
+        try {
+            JSONArray arr = new JSONArray(pageOrderJsonStr);
+            newPageOrder = new int[arr.length()];
+            for (int i = 0; i < arr.length(); i++) {
+                newPageOrder[i] = arr.getInt(i);
+            }
+        } catch (JSONException e) {
+            throw new NuxeoException(
+                    "pageOrderJsonStr must be a JSON array of integers, for example \"[3,1,4,2]\". Received: "
+                            + pageOrderJsonStr,
+                    e);
         }
 
-        Blob resultPdf = pageOrdering.reorganizePdf(newPageOrder);
-        
-        PDFDestinationHandler destHandler = new PDFDestinationHandler(doc, resultPdf, destinationJsonStr);
-        Blob result = destHandler.run();
-        
-        return result;
+        Blob resultPdf = new PDFPageOrdering(blob).reorganizePdf(newPageOrder);
+
+        return new PDFDestinationHandler(doc, resultPdf, destinationJsonStr).run();
 
     }
 }

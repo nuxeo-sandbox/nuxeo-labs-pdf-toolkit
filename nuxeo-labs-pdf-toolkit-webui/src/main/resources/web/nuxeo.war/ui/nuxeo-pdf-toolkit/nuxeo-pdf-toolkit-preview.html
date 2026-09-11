@@ -1,4 +1,6 @@
 <!--
+`nuxeo-pdf-toolkit-preview`
+Displays a bigger preview of a single page, in its own dialog.
 -->
 <dom-module id="nuxeo-pdf-toolkit-preview">
   <template>
@@ -57,12 +59,12 @@
 
     <nuxeo-operation id="jpegPreviewOp" op="PDFLabs.JpegImagePreview"></nuxeo-operation>
 
-    <paper-dialog id="previewDialog" modal>
+    <paper-dialog id="previewDialog" modal on-iron-overlay-closed="_onPreviewClosed">
       <div class="preview-content">
         <paper-icon-button class="preview-close-button"
                             icon="icons:close"
                             on-tap="_closePreviewDialog"></paper-icon-button>
-        
+
         <template is="dom-if" if="[[_loadingPreview]]">
           <div class="loading">
             <paper-spinner active></paper-spinner>
@@ -79,6 +81,7 @@
   <script>
     Polymer({
       is: 'nuxeo-pdf-toolkit-preview',
+      behaviors: [Nuxeo.I18nBehavior],
 
       properties: {
         // Private properties.
@@ -86,41 +89,59 @@
         _previewImageSrc: String
       },
 
-      // Public API to be called by the parent.
-      loadPreviewPage: function(document, page) {
-        if (document && page && page > 0) {
-          this.set('_loadingPreview', true);
-          this.set('_previewImageSrc', '');
-          this.$.previewDialog.open();
-
-          var op = this.$.jpegPreviewOp;
-          op.input = document;
-          op.params = { pageNumber: page };
-
-          op.execute()
-            .then(function(response) {
-              return response.blob();
-            }.bind(this))
-            .then(function(blob) {
-              var url = URL.createObjectURL(blob);
-              this.set('_previewImageSrc', url);
-              this.set('_loadingPreview', false);
-              this.set('page', null);
-            }.bind(this))
-            .catch(function(error) {
-              this.set('_loadingPreview', false);
-              this.fire('notify', {message: 'Error loading page preview: ' + error});
-              this.$.previewDialog.close();
-            }.bind(this));
-        }
+      detached: function() {
+        this._revokePreviewUrl();
       },
 
-      _closePreviewDialog: function() {
-        // Clean up the blob URL to free memory
-        if (this._previewImageSrc && this._previewImageSrc.startsWith('blob:')) {
+      /**
+       * Public API to be called by the parent.
+       * The document parameter is named `doc` on purpose: naming it `document` would shadow the
+       * global document object for the whole function.
+       */
+      loadPreviewPage: function(doc, page) {
+        if (!doc || !page || page <= 0) {
+          return;
+        }
+
+        // Release the previous preview before loading a new one, otherwise its blob leaks
+        this._revokePreviewUrl();
+        this.set('_loadingPreview', true);
+        this.$.previewDialog.open();
+
+        var op = this.$.jpegPreviewOp;
+        op.input = doc;
+        op.params = { pageNumber: page };
+
+        op.execute()
+          .then(function(response) {
+            return response.blob();
+          })
+          .then(function(blob) {
+            this.set('_previewImageSrc', URL.createObjectURL(blob));
+            this.set('_loadingPreview', false);
+          }.bind(this))
+          .catch(function(error) {
+            console.error(error);
+            this.set('_loadingPreview', false);
+            this.fire('notify', { message: this.i18n('pdftoolkit.error.previewFailed') });
+            this.$.previewDialog.close();
+          }.bind(this));
+      },
+
+      _revokePreviewUrl: function() {
+        if (this._previewImageSrc && this._previewImageSrc.indexOf('blob:') === 0) {
           URL.revokeObjectURL(this._previewImageSrc);
         }
         this.set('_previewImageSrc', '');
+      },
+
+      // Covers the close button, ESC and a backdrop click alike
+      _onPreviewClosed: function() {
+        this._revokePreviewUrl();
+      },
+
+      _closePreviewDialog: function() {
+        // _onPreviewClosed does the cleanup
         this.$.previewDialog.close();
       }
 

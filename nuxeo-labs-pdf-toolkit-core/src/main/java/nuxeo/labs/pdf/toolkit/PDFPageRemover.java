@@ -19,11 +19,13 @@
 package nuxeo.labs.pdf.toolkit;
 
 import java.io.IOException;
+import java.util.Comparator;
 import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.CloseableFile;
 import org.nuxeo.ecm.core.api.DocumentModel;
@@ -31,6 +33,8 @@ import org.nuxeo.ecm.core.api.NuxeoException;
 
 /**
  * Remove pages in a PDF.
+ *
+ * @since 2025.2
  */
 public class PDFPageRemover {
 
@@ -47,16 +51,13 @@ public class PDFPageRemover {
 
     public PDFPageRemover(DocumentModel doc, String xpath) {
 
-        if (StringUtils.isBlank(xpath)) {
-            xpath = "file:content";
-        }
-
-        pdfBlob = (Blob) doc.getPropertyValue(xpath);
+        this(PDFTools.getBlobFromDocument(doc, xpath));
 
     }
 
     public PDFPageRemover(Blob b) {
 
+        PDFTools.checkIsProcessablePdf(b);
         pdfBlob = b;
 
     }
@@ -65,18 +66,18 @@ public class PDFPageRemover {
     // Remove pages
     // ========================================
     /**
-     * Remove pages from the given PDF according to a "print dialog" style range string.
+     * Remove pages from the PDF according to a "print dialog" style range string.
      * Examples for a 15-page PDF:
      * "3" -> removes page 3
      * "3-6" -> removes pages 3,4,5,6
      * "3-6,8" -> removes 3,4,5,6,8
      * "3-6,8, 12-14" -> removes 3,4,5,6,8,12,13,14
      *
-     * @param pdf the input PDF file
-     * @param range a string describing pages to remove (1-based).
+     * @param range a string describing the pages to remove (1-based)
      * @return a Blob containing the resulting PDF (original is untouched)
      * @throws NuxeoException if reading or writing the PDF fails
      * @throws IllegalArgumentException if the range is malformed
+     * @since 2025.2
      */
     public Blob removePages(String range) {
 
@@ -85,10 +86,9 @@ public class PDFPageRemover {
         }
 
         try (CloseableFile source = pdfBlob.getCloseableFile();
-                PDDocument document = Loader.loadPDF(source.getFile());
-                PDDocument reordered = PDFTools.cloneDocument(document)) {
-            
-            int pageCount = reordered.getNumberOfPages();
+                PDDocument document = Loader.loadPDF(source.getFile())) {
+
+            int pageCount = document.getNumberOfPages();
             if (pageCount == 0) {
                 throw new IllegalArgumentException("Source PDF has no pages");
             }
@@ -98,21 +98,22 @@ public class PDFPageRemover {
                 throw new IllegalArgumentException("Range does not select any pages: \"" + range + "\"");
             }
 
-            // Remove from highest to lowest so that indices don't shift as we remove pages.
+            /*
+             * Removing pages only mutates the in-memory model: the source file is left untouched because we
+             * always save to a brand new temporary file. No defensive copy of the whole document needed.
+             * Remove from highest to lowest so that indices don't shift as we remove pages.
+             */
             pagesToRemove.stream()
-                         .sorted((a, b) -> Integer.compare(b, a)) // descending
-                         .forEach(pageNumber -> {
-                             int zeroBased = pageNumber - 1;// Parameter starts at 1, PDFBox at 0.
-                             if (zeroBased >= 0 && zeroBased < reordered.getNumberOfPages()) {
-                                 reordered.removePage(zeroBased);
-                             }
-                         });
+                         .sorted(Comparator.reverseOrder())
+                         .forEach(pageNumber -> document.removePage(pageNumber - 1)); // Parameter starts at 1, PDFBox at 0.
 
-            Blob finalBlob = PDFTools.saveToFileBlob(pdfBlob, reordered, "pdf-after-removed-pages", "-pages-removed");
+            return PDFTools.saveToFileBlob(pdfBlob, document, "pdf-after-removed-pages", "-pages-removed");
 
-            return finalBlob;
+        } catch (InvalidPasswordException e) {
+            throw new NuxeoException(
+                    "PDF \"" + pdfBlob.getFilename() + "\" is password-protected and cannot be processed.", e);
         } catch (IOException e) {
-            throw new NuxeoException("Failed to remove pages from the PDF", e);
+            throw new NuxeoException("Failed to remove pages from the PDF \"" + pdfBlob.getFilename() + "\".", e);
         }
     }
 

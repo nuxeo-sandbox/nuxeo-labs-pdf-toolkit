@@ -3,7 +3,12 @@
   "pdftoolkit.label.remove": "Remove",
   "pdftoolkit.label.reorg": "Reorganize",
   "pdftoolkit.label.close": "Close",
-  "pdftoolkit.confirm.removePages": "Are you sure you want to remove the selected pages?",
+  "pdftoolkit.label.cancel": "Cancel",
+  "pdftoolkit.label.ok": "OK",
+  "pdftoolkit.dialog.extract.title": "Extract Pages - Choose Destination",
+  "pdftoolkit.dialog.remove.title": "Remove Pages - Choose Destination",
+  "pdftoolkit.dialog.reorder.title": "Reorder Pages - Choose Destination",
+  "pdftoolkit.confirm.removePages": "This will replace the current PDF file. Are you sure you want to remove the selected pages?",
   "pdftoolkit.destination.download": "Download",
   "pdftoolkit.destination.download.help": "Download the modified PDF to your computer",
   "pdftoolkit.destination.derivative": "Derivative",
@@ -21,5 +26,7 @@
   "pdftoolkit.versioning.major": "Major",
   "pdftoolkit.versioning.minor": "Minor",
   "pdftoolkit.error.noPagesSelected": "No pages selected. Please select at least one page to proceed.",
-  "pdftoolkit.error.actionFailed": "The action could not be completed. Please try again later."
+  "pdftoolkit.error.actionFailed": "The action could not be completed. Please try again later.",
+  "pdftoolkit.error.thumbnailsFailed": "The page thumbnails could not be loaded.",
+  "pdftoolkit.error.previewFailed": "The page preview could not be loaded."
 }

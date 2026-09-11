@@ -188,6 +188,11 @@ Actions are taken by the parent via events.
 
       // --- Public API for parent ---
 
+      detached: function() {
+        // A drag interrupted by a detach would leave the auto-scroll timer running forever
+        this._stopAutoScroll();
+      },
+
       reset: function() {
         this.set('pages', []);
         this.set('_originalOrder', []);
@@ -342,7 +347,7 @@ Actions are taken by the parent via events.
       // --- Drag & drop + auto-scroll ---
 
       _onDragStart: function(e) {
-        this._draggedIndex = parseInt(e.currentTarget.dataset.index);
+        this._draggedIndex = parseInt(e.currentTarget.dataset.index, 10);
         e.currentTarget.classList.add('dragging');
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/plain', ''); // needed for Firefox
@@ -379,9 +384,13 @@ Actions are taken by the parent via events.
         if (e.stopPropagation) {
           e.stopPropagation();
         }
+        // Without this Firefox navigates to the dataTransfer content on drop
+        if (e.preventDefault) {
+          e.preventDefault();
+        }
         e.currentTarget.classList.remove('drag-over-before', 'drag-over-after');
 
-        var dropIndex = parseInt(e.currentTarget.dataset.index);
+        var dropIndex = parseInt(e.currentTarget.dataset.index, 10);
         if (this._draggedIndex !== dropIndex && this._draggedIndex >= 0) {
           var rect = e.currentTarget.getBoundingClientRect();
           var mouseX = e.clientX;

@@ -19,19 +19,20 @@
 package nuxeo.labs.pdf.toolkit.operations;
 
 import org.nuxeo.ecm.automation.core.Constants;
-import org.nuxeo.ecm.automation.core.annotations.Context;
 import org.nuxeo.ecm.automation.core.annotations.Operation;
 import org.nuxeo.ecm.automation.core.annotations.OperationMethod;
 import org.nuxeo.ecm.automation.core.annotations.Param;
 import org.nuxeo.ecm.core.api.Blob;
-import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
 
 import nuxeo.labs.pdf.toolkit.PDFDestinationHandler;
 import nuxeo.labs.pdf.toolkit.PDFPageRemover;
+import nuxeo.labs.pdf.toolkit.PDFTools;
 
 /**
  * An operation that remove pages in a PDF.
+ *
+ * @since 2025.2
  */
 @Operation(id = PDFPageRemoverOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Remove Pages", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
@@ -43,40 +44,30 @@ public class PDFPageRemoverOp {
 
     public static final String ID = "PDFLabs.RemovePages";
 
-    @Context
-    protected CoreSession session;
-
     @Param(name = "xpath", required = false)
     protected String xpath = "file:content";
 
     @Param(name = "pageRange", required = true)
     protected String pageRange;
-    
-    @Param(name="destinationJsonStr", required=false)
+
+    @Param(name = "destinationJsonStr", required = false)
     protected String destinationJsonStr;
-    
+
     protected DocumentModel doc = null;
 
     @OperationMethod
     public Blob run(DocumentModel doc) {
 
-        Blob b = (Blob) doc.getPropertyValue(xpath);
-
         this.doc = doc;
-        return run(b);
+        return run(PDFTools.getBlobFromDocument(doc, xpath));
     }
 
     @OperationMethod
     public Blob run(Blob blob) {
 
-        PDFPageRemover pageRemover = new PDFPageRemover(blob);
+        Blob resultPdf = new PDFPageRemover(blob).removePages(pageRange);
 
-        Blob resultPdf = pageRemover.removePages(pageRange);
-        
-        PDFDestinationHandler destHandler = new PDFDestinationHandler(doc, resultPdf, destinationJsonStr);
-        Blob result = destHandler.run();
-        
-        return result;
+        return new PDFDestinationHandler(doc, resultPdf, destinationJsonStr).run();
 
     }
 }

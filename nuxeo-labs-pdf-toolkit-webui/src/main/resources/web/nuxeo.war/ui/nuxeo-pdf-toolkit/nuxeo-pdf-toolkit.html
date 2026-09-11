@@ -14,7 +14,6 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
 
       #dialog {
         width: 80%;
-        /*max-width: 900px;*/
         height: 80vh;
         display: flex;
         flex-direction: column;
@@ -43,6 +42,27 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         margin-bottom: 5px;
       }
 
+      #confirmDialog {
+        width: 420px;
+        max-width: 90%;
+      }
+
+      .confirm-content {
+        padding: 24px;
+      }
+
+      .confirm-actions {
+        padding: 16px 24px;
+        border-top: 1px solid #e0e0e0;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      paper-button.danger {
+        background-color: #d32f2f;
+        color: white;
+      }
 
       /* "running operation"" overlay styles */
       .runningOperation-overlay {
@@ -90,7 +110,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       <div class="dialog-header">
         [[document.title]]
       </div>
-      
+
       <div class="dialog-content">
         <!-- Running operation indicator -->
         <template is="dom-if" if="[[_runningOperation]]">
@@ -117,13 +137,28 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
           has-reordered="[[_hasReordered]]"
           on-action-complete="_onActionComplete">
         </nuxeo-pdf-toolkit-actions>
-        <paper-button on-tap="_closeDialog">
+        <paper-button on-tap="_onCloseTap">
           <iron-icon icon="icons:close"></iron-icon>
           [[i18n('pdftoolkit.label.close')]]
         </paper-button>
       </div>
     </paper-dialog>
-    
+
+    <!-- Replacing the main file is destructive: confirm before doing it -->
+    <paper-dialog id="confirmDialog" modal>
+      <div class="confirm-content">[[i18n('pdftoolkit.confirm.removePages')]]</div>
+      <div class="confirm-actions">
+        <paper-button on-tap="_cancelRemove">
+          <iron-icon icon="icons:close"></iron-icon>
+          [[i18n('pdftoolkit.label.cancel')]]
+        </paper-button>
+        <paper-button class="danger" on-tap="_confirmRemove">
+          <iron-icon icon="icons:check"></iron-icon>
+          [[i18n('pdftoolkit.label.ok')]]
+        </paper-button>
+      </div>
+    </paper-dialog>
+
     <nuxeo-pdf-toolkit-preview id="preview"></nuxeo-pdf-toolkit-preview>
 
   </template>
@@ -187,6 +222,12 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         _hideOverlayTimer: {
           type: Number,
           value: 0
+        },
+
+        // Holds the parameters of a remove action waiting for user confirmation
+        _pendingRemove: {
+          type: Object,
+          value: null
         }
 
       },
@@ -194,6 +235,14 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       // ==============================================
       // Lifecycle & dialog logic
       // ==============================================
+      detached: function() {
+        // Do not let a pending timer fire on a detached element
+        if (this._hideOverlayTimer) {
+          clearTimeout(this._hideOverlayTimer);
+          this._hideOverlayTimer = 0;
+        }
+      },
+
       _documentChanged: function() {
         this.set('thumbnailSources', []);
         if (this.$.thumbnails) {
@@ -209,9 +258,16 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         this._loadThumbnails();
       },
 
-      _closeDialog: function() {
+      _onCloseTap: function() {
+        // Plain close: nothing was modified, no need to make the UI reload the document
+        this._closeDialog(false);
+      },
+
+      _closeDialog: function(documentWasModified) {
         this.$.dialog.close();
-        this.fire('document-updated');
+        if (documentWasModified) {
+          this.fire('document-updated');
+        }
       },
 
       // ==============================================
@@ -250,6 +306,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
 
           default:
             console.error('Unknown action:', e.detail.action);
+            this.fire('notify', { message: this.i18n('pdftoolkit.error.actionFailed') });
         }
       },
 
@@ -259,6 +316,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       _extractPages: function(destinationObj) {
         var pageRange = this.$.thumbnails.getSelectedPageRanges();
         if (!pageRange) {
+          this.fire('notify', { message: this.i18n('pdftoolkit.error.noPagesSelected') });
           return;
         }
 
@@ -282,15 +340,35 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       _removePages: function(destinationObj) {
         var pageRange = this.$.thumbnails.getSelectedPageRanges();
         if (!pageRange) {
+          this.fire('notify', { message: this.i18n('pdftoolkit.error.noPagesSelected') });
           return;
         }
 
-        if(destinationObj.destination === 'newFile') {
-          if (!confirm(this.i18n('pdftoolkit.confirm.removePages'))) {
-            return;
-          }
+        if (destinationObj.destination === 'newFile') {
+          // Destructive: replacing the main file. Ask for confirmation first.
+          this._pendingRemove = { pageRange: pageRange, destinationObj: destinationObj };
+          this.$.confirmDialog.open();
+          return;
         }
 
+        this._doRemovePages(pageRange, destinationObj);
+      },
+
+      _cancelRemove: function() {
+        this._pendingRemove = null;
+        this.$.confirmDialog.close();
+      },
+
+      _confirmRemove: function() {
+        var pending = this._pendingRemove;
+        this._pendingRemove = null;
+        this.$.confirmDialog.close();
+        if (pending) {
+          this._doRemovePages(pending.pageRange, pending.destinationObj);
+        }
+      },
+
+      _doRemovePages: function(pageRange, destinationObj) {
         this._startRunningOperation();
 
         this.$.removePagesOp.input = this.document;
@@ -300,7 +378,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         };
 
         this.$.removePagesOp.execute()
-            .then(function(response) {
+          .then(function(response) {
             this._handleResult(response, destinationObj.destination);
           }.bind(this))
           .catch(function(error) {
@@ -311,6 +389,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       _saveReorder: function(destinationObj) {
         var newOrder = this.$.thumbnails.getNewPageOrder();
         if (!newOrder || !newOrder.length) {
+          this.fire('notify', { message: this.i18n('pdftoolkit.error.noPagesSelected') });
           return;
         }
 
@@ -379,28 +458,26 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
 
       _handleOperationError: function(error) {
         console.error(error);
-        alert('An error occured: ' + error);
+        this.fire('notify', { message: this.i18n('pdftoolkit.error.actionFailed') });
         // Hide overlay, but keep the dialog open so the user can try again
         this._finishRunningOperation();
       },
 
       _handleResult: function(operationResponse, destination) {
-        switch (destination) {
-          case 'derivative':
-          case 'attachments':
-          case 'newFile':
-            // we could navigate to the new doc here if needed
-            break;
-
-          case 'download':
-            this._downloadBlob(operationResponse);
-            break;
+        if (destination === 'download') {
+          // Errors here happen outside the operation promise chain: catch them explicitly.
+          this._downloadBlob(operationResponse)
+              .catch(function(error) {
+                this._handleOperationError(error);
+              }.bind(this));
         }
 
-        // We are done with the whole dialog.
-        // Ensure overlay stays at least 2 seconds, then close.
+        /*
+         * We are done with the whole dialog. Ensure overlay stays at least 2 seconds, then close.
+         * A download leaves the document untouched, anything else modified it.
+         */
         this._finishRunningOperation(function() {
-          this._closeDialog();
+          this._closeDialog(destination !== 'download');
         }.bind(this));
       },
 
@@ -415,9 +492,9 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         op.params = {}; // if any
         op.execute()
           .then(function(response) {
-            // PDFLabs.GetThumbnails returns base64 images...
+            // PDFLabs.GetThumbnails returns base64 encoded JPEG images...
             var sources = response.map(function(imgData) {
-              return 'data:image/png;base64,' + imgData;
+              return 'data:image/jpeg;base64,' + imgData;
             });
             // ... if it returned an array of URLS, we would just:
             // var sources = response;
@@ -427,10 +504,11 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
           .catch(function(error) {
             console.error('Failed to load thumbnails', error);
             this.set('loading', false);
+            this.fire('notify', { message: this.i18n('pdftoolkit.error.thumbnailsFailed') });
           }.bind(this));
       },
 
-      // This functiuon prepares the object to send to the operation(s)
+      // This function prepares the object to send to the operation(s)
       _buildDestinationObject: function(detail) {
         var destinationObj = {
           destination: detail.destination
@@ -440,8 +518,8 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
           case 'newFile':
             destinationObj.details = {
               createVersion: detail.createVersion
-            }
-            if(destinationObj.details.createVersion) {
+            };
+            if (destinationObj.details.createVersion) {
               destinationObj.details.versionType = detail.versionType;
             }
             break;
@@ -450,31 +528,45 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
             destinationObj.details = {
               resetLifeCycle: detail.resetLifeCycle,
               derivativeTitle: detail.derivativeTitle
-            }
+            };
             break;
         }
 
         return destinationObj;
       },
 
-      _downloadBlob: function(operationResult) {
-        var contentDisposition = operationResult.headers.get('Content-Disposition');
-        var filenameMatches = contentDisposition
-          .match(/filename[^;=\n]*=([^;\n]*''([^;\n]*)|[^;\n]*)/)
-          .filter(function(match) {
-            return !!match;
-          });
-        var filename = decodeURI(filenameMatches[filenameMatches.length - 1]);
+      _extractFilename: function(operationResult) {
+        var header = operationResult.headers && operationResult.headers.get('Content-Disposition');
+        if (!header) {
+          return null;
+        }
+        // RFC 5987 form first: filename*=UTF-8''my%20file.pdf
+        var extended = header.match(/filename\*=[^']*''([^;\n]*)/);
+        if (extended && extended[1]) {
+          return decodeURIComponent(extended[1]);
+        }
+        var plain = header.match(/filename="?([^";\n]*)"?/);
+        return plain && plain[1] ? decodeURIComponent(plain[1]) : null;
+      },
 
-        operationResult.blob()
-          .then(function(blob) {
-            var a = document.createElement('a');
-            a.style = 'display: none';
-            a.download = filename;
-            a.href = URL.createObjectURL(blob);
-            a.click();
-            URL.revokeObjectURL(a.href);
-          });
+      _downloadBlob: function(operationResult) {
+        var filename = this._extractFilename(operationResult) || 'document.pdf';
+
+        return operationResult.blob().then(function(blob) {
+          var url = URL.createObjectURL(blob);
+          var a = document.createElement('a');
+          a.style.display = 'none';
+          a.download = filename;
+          a.href = url;
+          // Firefox requires the anchor to be part of the document for click() to trigger a download
+          document.body.appendChild(a);
+          a.click();
+          // Revoking synchronously can cancel an in-flight download: let the browser start first
+          setTimeout(function() {
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+          }, 1000);
+        });
       }
     });
   </script>

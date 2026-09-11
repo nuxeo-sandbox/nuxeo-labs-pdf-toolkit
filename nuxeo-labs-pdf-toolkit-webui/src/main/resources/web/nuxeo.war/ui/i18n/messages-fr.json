@@ -3,7 +3,12 @@
   "pdftoolkit.label.remove": "Supprimer",
   "pdftoolkit.label.reorg": "Réorganiser",
   "pdftoolkit.label.close": "Fermer",
-  "pdftoolkit.confirm.removePages": "Supprimer les pages sélectionnées ?",
+  "pdftoolkit.label.cancel": "Annuler",
+  "pdftoolkit.label.ok": "OK",
+  "pdftoolkit.dialog.extract.title": "Extraire des pages — choisir la destination",
+  "pdftoolkit.dialog.remove.title": "Supprimer des pages — choisir la destination",
+  "pdftoolkit.dialog.reorder.title": "Réorganiser les pages — choisir la destination",
+  "pdftoolkit.confirm.removePages": "Le fichier PDF actuel sera remplacé. Supprimer les pages sélectionnées ?",
   "pdftoolkit.destination.download": "Téléchargement",
   "pdftoolkit.destination.download.help": "Télécharger le PDF modifié",
   "pdftoolkit.destination.derivative": "Copie",
@@ -21,5 +26,7 @@
   "pdftoolkit.versioning.major": "Majeure",
   "pdftoolkit.versioning.minor": "Mineure",
   "pdftoolkit.error.noPagesSelected": "Aucune page sélectionnée. Veuillez sélectionner au moins une page pour continuer.",
-  "pdftoolkit.error.actionFailed": "L'action n'a pas pu être réalisée. Veuillez réessayer plus tard."
+  "pdftoolkit.error.actionFailed": "L'action n'a pas pu être réalisée. Veuillez réessayer plus tard.",
+  "pdftoolkit.error.thumbnailsFailed": "Les vignettes des pages n'ont pas pu être chargées.",
+  "pdftoolkit.error.previewFailed": "L'aperçu de la page n'a pas pu être chargé."
 }

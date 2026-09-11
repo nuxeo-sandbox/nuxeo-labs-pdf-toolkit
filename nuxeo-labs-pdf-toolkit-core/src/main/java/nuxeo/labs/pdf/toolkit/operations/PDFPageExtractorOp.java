@@ -19,24 +19,27 @@
 package nuxeo.labs.pdf.toolkit.operations;
 
 import org.nuxeo.ecm.automation.core.Constants;
-import org.nuxeo.ecm.automation.core.annotations.Context;
 import org.nuxeo.ecm.automation.core.annotations.Operation;
 import org.nuxeo.ecm.automation.core.annotations.OperationMethod;
 import org.nuxeo.ecm.automation.core.annotations.Param;
 import org.nuxeo.ecm.core.api.Blob;
-import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
 
 import nuxeo.labs.pdf.toolkit.PDFDestinationHandler;
 import nuxeo.labs.pdf.toolkit.PDFPageExtractor;
+import nuxeo.labs.pdf.toolkit.PDFTools;
 
 /**
  * An operation that extract pages from a PDF.
+ *
+ * @since 2025.2
  */
 @Operation(id = PDFPageExtractorOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Extract Pages by Range", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
         + " pageRange is a string, required, formated as when you display a print dialog, with pages starting at 1."
         + " For example, '2-5' extracts page 2 to 5 (inclusive). '2-5,8, 10-14' extracts pages 2 to 5, 8 and 10 to 14."
+        + " The extracted pages always keep their original document order, whatever the order used in the range"
+        + " string: '8,2-4' and '2-4,8' both produce pages 2, 3, 4, 8. Use PDFLabs.ReorderPages for an arbitrary order."
         + " Notice there also is a PDF.ExtractPages operation provided by the platform, which accepts only a start-end pages."
         + " destinationJsonStr is a JSON object telling the operation what to do with the pdf. Not passed => download."
         + " See documentation for details.")
@@ -44,40 +47,30 @@ public class PDFPageExtractorOp {
 
     public static final String ID = "PDFLabs.ExtractPagesByRange";
 
-    @Context
-    protected CoreSession session;
-
     @Param(name = "xpath", required = false)
     protected String xpath = "file:content";
 
     @Param(name = "pageRange", required = true)
     protected String pageRange;
-    
-    @Param(name="destinationJsonStr", required=false)
+
+    @Param(name = "destinationJsonStr", required = false)
     protected String destinationJsonStr;
-    
+
     protected DocumentModel doc = null;
 
     @OperationMethod
     public Blob run(DocumentModel doc) {
 
-        Blob b = (Blob) doc.getPropertyValue(xpath);
-
         this.doc = doc;
-        return run(b);
+        return run(PDFTools.getBlobFromDocument(doc, xpath));
     }
 
     @OperationMethod
     public Blob run(Blob blob) {
 
-        PDFPageExtractor pageExtractor = new PDFPageExtractor(blob);
+        Blob resultPdf = new PDFPageExtractor(blob).extractPages(pageRange);
 
-        Blob resultPdf = pageExtractor.extractPages(pageRange);
-        
-        PDFDestinationHandler destHandler = new PDFDestinationHandler(doc, resultPdf, destinationJsonStr);
-        Blob result = destHandler.run();
-        
-        return result;
+        return new PDFDestinationHandler(doc, resultPdf, destinationJsonStr).run();
 
     }
 }

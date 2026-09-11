@@ -24,6 +24,7 @@ import java.util.Set;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.CloseableFile;
 import org.nuxeo.ecm.core.api.DocumentModel;
@@ -31,9 +32,11 @@ import org.nuxeo.ecm.core.api.NuxeoException;
 
 /**
  * Extract pages from a PDF.
- * 
+ * <p>
  * We cannot use the platform org.nuxeo.ecm.platform.pdf.PDFPageExtractor, since it extracts only a page
  * range with start-to. We want something more complex.
+ *
+ * @since 2025.2
  */
 public class PDFPageExtractor {
 
@@ -50,16 +53,13 @@ public class PDFPageExtractor {
 
     public PDFPageExtractor(DocumentModel doc, String xpath) {
 
-        if (StringUtils.isBlank(xpath)) {
-            xpath = "file:content";
-        }
-
-        pdfBlob = (Blob) doc.getPropertyValue(xpath);
+        this(PDFTools.getBlobFromDocument(doc, xpath));
 
     }
 
     public PDFPageExtractor(Blob b) {
 
+        PDFTools.checkIsProcessablePdf(b);
         pdfBlob = b;
 
     }
@@ -68,18 +68,22 @@ public class PDFPageExtractor {
     // Extract pages
     // ========================================
     /**
-     * Extract pages from the given PDF according to a "print dialog" style range string.
+     * Extract pages from the PDF according to a "print dialog" style range string.
      * Examples for a 15-page PDF:
      * "3" -> extracts page 3
      * "3-6" -> extracts pages 3,4,5,6
      * "3-6,8" -> extracts 3,4,5,6,8
      * "3-6,8, 12-14" -> extracts 3,4,5,6,8,12,13,14
+     * <p>
+     * The extracted pages always keep their original document order, whatever the order used in the range
+     * string: "8,2-4" and "2-4,8" both produce pages 2, 3, 4, 8. Use {@link PDFPageOrdering} to obtain an
+     * arbitrary page order.
      *
-     * @param pdf the input Blob file
-     * @param range a string describing pages to remove (1-based).
+     * @param range a string describing the pages to extract (1-based)
      * @return a Blob containing the resulting PDF (original is untouched)
      * @throws NuxeoException if reading or writing the PDF fails
      * @throws IllegalArgumentException if the range is malformed
+     * @since 2025.2
      */
     public Blob extractPages(String range) {
 
@@ -101,18 +105,19 @@ public class PDFPageExtractor {
                 throw new IllegalArgumentException("Range does not select any pages: \"" + range + "\"");
             }
 
+            // parsePageRange() returns a sorted set of already validated pages.
             for (int pageNumber : pagesToExtract) {
-                int zeroBased = pageNumber - 1;
-                PDFTools.validatePageNumber(pageNumber, pageCount, range);
-                extracted.importPage(sourcePdf.getPage(zeroBased));
+                extracted.importPage(sourcePdf.getPage(pageNumber - 1));
             }
-            
-            Blob finalBlob = PDFTools.saveToFileBlob(pdfBlob, extracted, "pdf-extracted-pages", "-extracted");
-            
-            return finalBlob;
-            
+
+            // Saving while sourcePdf is still open: importPage() does not deep-copy the page resources.
+            return PDFTools.saveToFileBlob(pdfBlob, extracted, "pdf-extracted-pages", "-extracted");
+
+        } catch (InvalidPasswordException e) {
+            throw new NuxeoException(
+                    "PDF \"" + pdfBlob.getFilename() + "\" is password-protected and cannot be processed.", e);
         } catch (IOException e) {
-            throw new NuxeoException("Failed to extract pages from the PDF", e);
+            throw new NuxeoException("Failed to extract pages from the PDF \"" + pdfBlob.getFilename() + "\".", e);
         }
     }
 

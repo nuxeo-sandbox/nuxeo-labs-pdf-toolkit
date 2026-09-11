@@ -22,9 +22,9 @@ import java.io.IOException;
 import java.util.HashSet;
 import java.util.Set;
 
-import org.apache.commons.lang3.StringUtils;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.CloseableFile;
 import org.nuxeo.ecm.core.api.DocumentModel;
@@ -32,7 +32,8 @@ import org.nuxeo.ecm.core.api.NuxeoException;
 
 /**
  * A class to reorder pages in a pdf.
- * 
+ *
+ * @since 2025.2
  */
 public class PDFPageOrdering {
 
@@ -49,16 +50,13 @@ public class PDFPageOrdering {
 
     public PDFPageOrdering(DocumentModel doc, String xpath) {
 
-        if (StringUtils.isBlank(xpath)) {
-            xpath = "file:content";
-        }
-
-        pdfBlob = (Blob) doc.getPropertyValue(xpath);
+        this(PDFTools.getBlobFromDocument(doc, xpath));
 
     }
 
     public PDFPageOrdering(Blob b) {
 
+        PDFTools.checkIsProcessablePdf(b);
         pdfBlob = b;
 
     }
@@ -67,20 +65,20 @@ public class PDFPageOrdering {
     // Order pages
     // ========================================
     /**
-     * Reorganize the pages of the given PDF according to the pagesOrder array.
-     * Example: for a 10-page PDF and pagesOrder = [3,6,1,7,9,8,2,4,5,10]
-     * New page 1 => old page 3
-     * New page 2 => old page 6
-     * New page 3 => old page 1
+     * Reorganize the pages of the PDF according to the newPageOrder array.
+     * Example: for a 10-page PDF and newPageOrder = [3,6,1,7,9,8,2,4,5,10]
+     * New page 1 =&gt; old page 3
+     * New page 2 =&gt; old page 6
+     * New page 3 =&gt; old page 1
      * ...
-     * 
-     * TRhe result can have a smaller size (less pages).
+     * <p>
+     * The result can have a smaller size (less pages): the array does not have to hold every page.
      *
-     * @param pdf the input PDF file
-     * @param pagesOrder 1-based page numbers in the new order; must be a permutation of all pages
+     * @param newPageOrder 1-based page numbers in the new order, without duplicates
      * @return a new Blob containing the reorganized PDF. Blob file name is {originalName}-reordered.pdf
      * @throws NuxeoException if reading or writing the PDF fails
-     * @throws IllegalArgumentException if the range is malformed
+     * @throws IllegalArgumentException if the page order is malformed
+     * @since 2025.2
      */
     public Blob reorganizePdf(int[] newPageOrder) {
 
@@ -100,28 +98,23 @@ public class PDFPageOrdering {
             validatePagesOrder(newPageOrder, pageCount);
 
             for (int pageNum : newPageOrder) {
-                int zeroBased = pageNum - 1;
-                reordered.importPage(sourcePdf.getPage(zeroBased));
+                reordered.importPage(sourcePdf.getPage(pageNum - 1));
             }
 
-            Blob finalBlob = PDFTools.saveToFileBlob(pdfBlob, reordered, "pdf", "-reordered");
+            // Saving while sourcePdf is still open: importPage() does not deep-copy the page resources.
+            return PDFTools.saveToFileBlob(pdfBlob, reordered, "pdf", "-reordered");
 
-            return finalBlob;
-
+        } catch (InvalidPasswordException e) {
+            throw new NuxeoException(
+                    "PDF \"" + pdfBlob.getFilename() + "\" is password-protected and cannot be processed.", e);
         } catch (IOException e) {
-            throw new NuxeoException("Failed to remove pages from the PDF", e);
+            throw new NuxeoException("Failed to reorder pages in the PDF \"" + pdfBlob.getFilename() + "\".", e);
         }
     }
 
     protected void validatePagesOrder(int[] pagesOrder, int pageCount) {
-        // We allow a different number of pages
-        /*
-        if (pagesOrder.length != pageCount) {
-            throw new IllegalArgumentException("pagesOrder length (" + pagesOrder.length
-                    + ") does not match document page count (" + pageCount + ")");
-        }
-        */
 
+        // An array shorter than the document is allowed on purpose: it produces a PDF with fewer pages.
         Set<Integer> seen = new HashSet<>();
         for (int p : pagesOrder) {
             if (p < 1 || p > pageCount) {

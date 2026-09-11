@@ -2,7 +2,11 @@
 <package type="addon" name="nuxeo-labs-pdf-toolkit" version="@VERSION@">
   <title>Nuxeo labs pdf toolkit</title>
   <description>
-    <p>Put here an HTML description of your Nuxeo Package.</p>
+    <p>Adds a "PDF Toolkit" action to PDF documents in the Web UI: display the page thumbnails,
+      select pages, reorder them by drag and drop, then extract, remove or reorder pages.</p>
+    <p>The result can be downloaded, saved as a derivative document, added to the attachments, or used
+      to replace the main file (with optional versioning).</p>
+    <p>Also provides five Automation operations (PDFLabs.*) usable outside the UI.</p>
   </description>
   <!-- <home-page>http://doc.nuxeo.com/</home-page> -->
   <vendor>Hyland</vendor>
@@ -20,13 +24,10 @@
     <version>[@NUXEO_TARGET_VERSION@,)</version>
   </target-platform>
   <!-- Dependencies on other packages -->
-  <!-- <dependencies> -->
-  <!-- <package>another-package:1.0.0:1.0.0</package> -->
-  <!-- If you require JSF UI package:  -->
-  <!-- <package>nuxeo-jsf-ui</package> -->
-  <!-- If you require WEB UI package:  -->
-  <!-- <package>nuxeo-web-ui</package> -->
-  <!-- </dependencies> -->
+  <!-- The plugin ships Web UI resources and appends to the Web UI i18n files: it cannot work without it. -->
+  <dependencies>
+    <package>nuxeo-web-ui</package>
+  </dependencies>
   <!-- Conflicts with other packages -->
   <!-- <conflicts> -->
   <!-- <package>a-conflicting-package:1.0.0:1.0.0</package> -->
@@ -35,8 +36,8 @@
   <!-- <provides> -->
   <!-- <package>an-embedded-package:1.0.0:1.0.0</package> -->
   <!-- </provides> -->
-  <license></license>
-  <license-url></license-url>
+  <license>Apache License, Version 2.0</license>
+  <license-url>http://www.apache.org/licenses/LICENSE-2.0.html</license-url>
   <!-- Visibility: PRIVATE | MARKETPLACE | DEV | PUBLIC -->
   <visibility>DEV</visibility>
 </package>

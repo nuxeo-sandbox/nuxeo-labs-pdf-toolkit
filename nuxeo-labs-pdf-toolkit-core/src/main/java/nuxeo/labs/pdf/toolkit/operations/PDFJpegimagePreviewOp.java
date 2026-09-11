@@ -22,20 +22,21 @@ import java.io.IOException;
 import java.util.Base64;
 
 import org.nuxeo.ecm.automation.core.Constants;
-import org.nuxeo.ecm.automation.core.annotations.Context;
 import org.nuxeo.ecm.automation.core.annotations.Operation;
 import org.nuxeo.ecm.automation.core.annotations.OperationMethod;
 import org.nuxeo.ecm.automation.core.annotations.Param;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.Blobs;
-import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
 import org.nuxeo.ecm.core.api.NuxeoException;
 
 import nuxeo.labs.pdf.toolkit.PDFToImages;
+import nuxeo.labs.pdf.toolkit.PDFTools;
 
 /**
  * An operation that return the jpeg preview of a page.
+ *
+ * @since 2025.2
  */
 @Operation(id = PDFJpegimagePreviewOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Jpeg Image Preview", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
@@ -45,24 +46,19 @@ public class PDFJpegimagePreviewOp {
 
     public static final String ID = "PDFLabs.JpegImagePreview";
 
-    @Context
-    protected CoreSession session;
-
     @Param(name = "xpath", required = false)
     protected String xpath = "file:content";
 
     @Param(name = "pageNumber", required = true)
     protected Integer pageNumber;
-    
+
     @Param(name = "asBase64", required = false)
     protected Boolean asBase64 = false;
 
     @OperationMethod
     public Blob run(DocumentModel doc) {
 
-        Blob b = (Blob) doc.getPropertyValue(xpath);
-
-        return run(b);
+        return run(PDFTools.getBlobFromDocument(doc, xpath));
     }
 
     @OperationMethod
@@ -71,16 +67,14 @@ public class PDFJpegimagePreviewOp {
         PDFToImages pageExtractor = new PDFToImages(blob);
 
         Blob jpeg = pageExtractor.getJpegPreviewImage(pageNumber);
-        
-        if(asBase64) {
-            byte[] bytes;
+
+        if (Boolean.TRUE.equals(asBase64)) {
             try {
-                bytes = jpeg.getByteArray();
+                String base64 = Base64.getEncoder().encodeToString(jpeg.getByteArray());
+                jpeg = Blobs.createBlob(base64);
             } catch (IOException e) {
-                throw new NuxeoException(e);
+                throw new NuxeoException("Failed to base64-encode the page preview.", e);
             }
-            String base64 = Base64.getEncoder().encodeToString(bytes);
-            jpeg = Blobs.createBlob(base64);
         }
 
         return jpeg;
