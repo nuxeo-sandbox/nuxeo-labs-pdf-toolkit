@@ -50,8 +50,37 @@ Actions are taken by the parent via events.
         box-shadow: 0 4px 8px rgba(0,102,255,0.2);
       }
 
+      /* Applied to every tile being moved, not just the one the user grabbed */
       .page-item.dragging {
         opacity: 0.5;
+      }
+
+      /*
+       * Count of the pages being moved. Only shown on the grabbed tile, and only when more than
+       * one page is moving: showing "1" while dragging a single page is just noise.
+       */
+      .drag-count {
+        display: none;
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        min-width: 22px;
+        height: 22px;
+        padding: 0 6px;
+        box-sizing: border-box;
+        border-radius: 11px;
+        background-color: var(--nuxeo-primary-color, #0066ff);
+        color: #fff;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 22px;
+        text-align: center;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        pointer-events: none;
+      }
+
+      .page-item.dragging-source .drag-count {
+        display: block;
       }
 
       .page-item.drag-over-before::before,
@@ -123,6 +152,9 @@ Actions are taken by the parent via events.
                  on-error="_onThumbnailError"
                  alt$="Page [[_computePageNumber(index, page.originalPageNumber)]]">
             <span class="page-number">[[_computePageNumber(index, page.originalPageNumber)]]</span>
+            <!-- Filled imperatively on dragstart: touching a bound property mid-drag would
+                 re-render the dom-repeat and abort the gesture. -->
+            <div class="drag-count"></div>
           </div>
         </template>
       </div>
@@ -366,9 +398,76 @@ Actions are taken by the parent via events.
 
       // --- Drag & drop + auto-scroll ---
 
+      /**
+       * Indices of the pages the current drag is about, sorted ascending.
+       * Grabbing a tile that belongs to the selection moves the whole selection.
+       */
+      _getMovingIndices: function() {
+        if (this._draggedIndex < 0) {
+          return [];
+        }
+
+        var dragged = this.pages[this._draggedIndex];
+        if (!dragged || !dragged.selected) {
+          return [this._draggedIndex];
+        }
+
+        var indices = [];
+        this.pages.forEach(function(page, index) {
+          if (page.selected) {
+            indices.push(index);
+          }
+        });
+
+        return indices;
+      },
+
+      _tileAt: function(index) {
+        return this.root.querySelector('.page-item[data-index="' + index + '"]');
+      },
+
+      _clearDragClasses: function() {
+        var items = this.root.querySelectorAll('.page-item');
+        Array.prototype.forEach.call(items, function(item) {
+          item.classList.remove('dragging', 'dragging-source', 'drag-over-before', 'drag-over-after');
+        });
+      },
+
       _onDragStart: function(e) {
         this._draggedIndex = parseInt(e.currentTarget.dataset.index, 10);
-        e.currentTarget.classList.add('dragging');
+
+        /*
+         * Grabbing a tile outside the selection makes it the selection, the way a desktop file
+         * manager does. Without this, tiles would stay highlighted while not moving.
+         * this.set() on a path only updates the class of the existing node, it does not recreate
+         * it, so the drag is not interrupted.
+         */
+        var dragged = this.pages[this._draggedIndex];
+        if (dragged && !dragged.selected) {
+          this.pages.forEach(function(page, index) {
+            this.set('pages.' + index + '.selected', index === this._draggedIndex);
+          }.bind(this));
+          this._lastSelectedIndex = this._draggedIndex;
+          this.set('hasSelection', true);
+        }
+
+        var moving = this._getMovingIndices();
+        moving.forEach(function(index) {
+          var tile = this._tileAt(index);
+          if (tile) {
+            tile.classList.add('dragging');
+          }
+        }.bind(this));
+
+        // Only tell the user how many pages are moving when there is more than one
+        if (moving.length > 1) {
+          var badge = e.currentTarget.querySelector('.drag-count');
+          if (badge) {
+            badge.textContent = moving.length;
+          }
+          e.currentTarget.classList.add('dragging-source');
+        }
+
         e.dataTransfer.effectAllowed = 'move';
         e.dataTransfer.setData('text/plain', ''); // needed for Firefox
         this._startAutoScroll();
@@ -410,43 +509,63 @@ Actions are taken by the parent via events.
         }
         e.currentTarget.classList.remove('drag-over-before', 'drag-over-after');
 
-        var dropIndex = parseInt(e.currentTarget.dataset.index, 10);
-        if (this._draggedIndex !== dropIndex && this._draggedIndex >= 0) {
-          var rect = e.currentTarget.getBoundingClientRect();
-          var mouseX = e.clientX;
-          var itemCenterX = rect.left + rect.width / 2;
-
-          var insertIndex = dropIndex;
-          if (mouseX >= itemCenterX) {
-            insertIndex = dropIndex + 1;
-          }
-          if (this._draggedIndex < insertIndex) {
-            insertIndex--;
-          }
-
-          var draggedPage = this.pages[this._draggedIndex];
-          var newPages = this.pages.slice();
-          newPages.splice(this._draggedIndex, 1);
-          newPages.splice(insertIndex, 0, draggedPage);
-
-          var currentOrder = newPages.map(function(p) { return p.originalPageNumber; });
-          var hasChanged = !this._arraysEqual(currentOrder, this._originalOrder);
-
-          this.set('pages', newPages);
-          this.set('hasReordered', hasChanged);
+        var moving = this._getMovingIndices();
+        if (!moving.length) {
+          return false;
         }
+
+        var dropIndex = parseInt(e.currentTarget.dataset.index, 10);
+        var rect = e.currentTarget.getBoundingClientRect();
+        var insertIndex = e.clientX >= rect.left + rect.width / 2 ? dropIndex + 1 : dropIndex;
+
+        /*
+         * insertIndex is expressed in the coordinates of the current array. Pulling the moved pages
+         * out shifts everything that followed them, so the anchor must be moved left by the number
+         * of moved pages that sat before it.
+         */
+        var isMoving = {};
+        var movedBefore = 0;
+        moving.forEach(function(index) {
+          isMoving[index] = true;
+          if (index < insertIndex) {
+            movedBefore++;
+          }
+        });
+
+        // The moved pages are regrouped contiguously at the drop point, keeping their relative order
+        var movedPages = moving.map(function(index) {
+          return this.pages[index];
+        }, this);
+        var newPages = this.pages.filter(function(page, index) {
+          return !isMoving[index];
+        });
+        Array.prototype.splice.apply(newPages, [insertIndex - movedBefore, 0].concat(movedPages));
+
+        var currentOrder = newPages.map(function(p) { return p.originalPageNumber; });
+        var previousOrder = this.pages.map(function(p) { return p.originalPageNumber; });
+        if (this._arraysEqual(currentOrder, previousOrder)) {
+          // Nothing actually moved, do not re-render for nothing
+          return false;
+        }
+
+        this.set('pages', newPages);
+        this.set('hasReordered', !this._arraysEqual(currentOrder, this._originalOrder));
+        // Indices just shifted, the shift-click anchor no longer means anything
+        this._lastSelectedIndex = -1;
 
         return false;
       },
 
-      _onDragEnd: function(e) {
-        e.currentTarget.classList.remove('dragging');
+      _onDragEnd: function() {
         this._draggedIndex = -1;
         this._stopAutoScroll();
-        var items = this.shadowRoot.querySelectorAll('.page-item');
-        items.forEach(function(item) {
-          item.classList.remove('drag-over-before', 'drag-over-after');
-        });
+        /*
+         * Clear on every tile, not just the one that was grabbed: _onDrop re-rendered the
+         * dom-repeat, so nodes may have been recycled and the grabbed node may now be another page.
+         * The second pass covers a render that Polymer deferred past this handler.
+         */
+        this._clearDragClasses();
+        this.async(this._clearDragClasses.bind(this));
       },
 
       _startAutoScroll: function() {

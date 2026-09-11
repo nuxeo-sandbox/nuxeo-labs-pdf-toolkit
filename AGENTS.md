@@ -206,6 +206,14 @@ Polymer 2 / Web UI legacy elements under
   and all operation calls. Children are dumb and event-based:
   - `-thumbnails.html` → selection/drag-drop, exposes `getSelectedPageRanges()` /
     `getNewPageOrder()`, notifies `hasSelection` / `hasReordered`, fires `page-preview`.
+    Drag and drop moves **every selected page**, not just the grabbed tile, and regroups them
+    contiguously at the drop point keeping their relative order. Grabbing a tile outside the
+    selection makes it the selection first. Two rules to keep in mind when touching it:
+    - the drag handlers manipulate classes through `classList`, **never through a bound
+      property**: changing one would re-render the `dom-repeat` and abort the drag. That is also
+      why the count badge is a node already in the template whose text is filled imperatively.
+    - `_onDrop` replaces `pages`, so the `dom-repeat` re-renders and nodes get recycled. Always
+      clear the drag classes on **every** tile in `_onDragEnd`, never on `e.currentTarget` alone.
   - `-actions.html` → buttons + destination dialog, calls **no** operation, fires
     `action-complete`. The three write destinations are hidden through `_canWrite`, which
     mirrors `FiltersBehavior.hasPermission` and **fails open** when the `permissions` enricher
