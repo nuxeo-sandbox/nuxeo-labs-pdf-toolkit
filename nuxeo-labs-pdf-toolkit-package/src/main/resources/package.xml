@@ -6,7 +6,7 @@
       select pages, reorder them by drag and drop, then extract, remove or reorder pages.</p>
     <p>The result can be downloaded, saved as a derivative document, added to the attachments, or used
       to replace the main file (with optional versioning).</p>
-    <p>Also provides five Automation operations (PDFLabs.*) usable outside the UI.</p>
+    <p>Also provides six Automation operations (PDFLabs.*) usable outside the UI.</p>
   </description>
   <!-- <home-page>http://doc.nuxeo.com/</home-page> -->
   <vendor>Hyland</vendor>

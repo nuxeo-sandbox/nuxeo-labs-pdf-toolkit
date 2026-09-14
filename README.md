@@ -1,6 +1,6 @@
 # nuxeo-labs-pdf-toolkit
 
-The plugin (for Nuxeo LTS 2025 and 2023) displays a "PDF Toolkit" button for documents which have a `file:content` blob whose mime type is "application/pdf" (see below how to override this button). Versions and proxies are excluded, since they cannot be modified. Clicking this button displays a dialog with the thumbnails of the pages of the PDF.
+The plugin displays a "PDF Toolkit" button for documents which have a `file:content` blob whose mime type is "application/pdf" (see below how to override this button). Versions and proxies are excluded, since they cannot be modified. Clicking this button displays a dialog with the thumbnails of the pages of the PDF.
 
 <img src="README-Medias/01-Dialog.png" alt="nuxeo-labs-pdf-toolkit" width="800">
 
@@ -443,12 +443,23 @@ Pick a value from the ladder when you set `thumbnailWidth` / `thumbnailHeight` /
 
 ## Installation
 
-The plugin is available on [Nuxeo MarketPlace](https://connect.nuxeo.com/nuxeo/site/marketplace/package/nuxeo-labs-pdf-toolkit), for LTS 2025 and LTS 2023. So you can
+The plugin is available on [Nuxeo MarketPlace](https://connect.nuxeo.com/nuxeo/site/marketplace/package/nuxeo-labs-pdf-toolkit). So you can
 
 * Add it as a dependency of your Nuxeo Studio project (Modeler > Settings > Application Definition)
 * Add it to `NUXEO_PACKAGES` in your Docker toolling
 * Or use `nuxeoctl mp-install nuxeo-labs-pdf-toolkit`
 * Or download the package and install it manually: `nuxeoctl mp-install nuxeo-labs-pdf-toolkit-{plugin version}`
+
+<br />
+
+## Supported versions
+
+**Only LTS 2025 is maintained**, on the `master` branch.
+
+An `lts2023` branch exists and a build of it is on the Marketplace, but it is frozen: it receives no
+fix, no back-port and no support. In particular it does **not** carry the rendering bounds described
+in "Rendering limits" above, so a single crafted PDF can exhaust the heap of a server running it.
+If you are on LTS 2023 and use this plugin, treat that branch as end-of-life and plan an upgrade.
 
 <br />
 

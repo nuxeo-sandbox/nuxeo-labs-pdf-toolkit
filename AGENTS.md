@@ -10,9 +10,12 @@ local path, a credential or any PII in it.
 
 ## Branches
 
-- `master` = LTS 2025. **This is the only branch to work on.**
-- `lts2023` exists but is **not** back-ported to. Do not modify it, do not cherry-pick to it,
-  do not mention it in commits unless explicitly asked.
+- `master` = LTS 2025. **This is the only branch to work on**, and the only one that is maintained.
+- `lts2023` exists but is **frozen**: not back-ported to, no fix, no support. Do not modify it, do
+  not cherry-pick to it, do not mention it in commits unless explicitly asked. It predates the
+  rendering bounds (`PDFToImages.renderPage`), so it still allows a crafted PDF to exhaust the heap —
+  if someone asks for "just a small back-port", say that first. The README states the policy for
+  users, keep the two consistent.
 
 ## Build & test
 
