@@ -3,6 +3,8 @@
   "pdftoolkit.label.remove": "Supprimer",
   "pdftoolkit.label.reorg": "Réorganiser",
   "pdftoolkit.label.close": "Fermer",
+  "pdftoolkit.label.pageCount": "{0} pages",
+  "pdftoolkit.label.processing": "Traitement en cours…",
   "pdftoolkit.label.cancel": "Annuler",
   "pdftoolkit.label.ok": "OK",
   "pdftoolkit.dialog.extract.title": "Extraire des pages — choisir la destination",
@@ -28,5 +30,6 @@
   "pdftoolkit.error.noPagesSelected": "Aucune page sélectionnée. Veuillez sélectionner au moins une page pour continuer.",
   "pdftoolkit.error.actionFailed": "L'action n'a pas pu être réalisée. Veuillez réessayer plus tard.",
   "pdftoolkit.error.thumbnailsFailed": "Les vignettes des pages n'ont pas pu être chargées.",
-  "pdftoolkit.error.previewFailed": "L'aperçu de la page n'a pas pu être chargé."
+  "pdftoolkit.error.previewFailed": "L'aperçu de la page n'a pas pu être chargé.",
+  "pdftoolkit.error.tooManyPages": "Ce PDF comporte trop de pages pour être affiché."
 }

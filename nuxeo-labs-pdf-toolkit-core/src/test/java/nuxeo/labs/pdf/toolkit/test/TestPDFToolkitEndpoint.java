@@ -19,6 +19,7 @@
 package nuxeo.labs.pdf.toolkit.test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -42,6 +43,7 @@ import org.nuxeo.runtime.test.runner.Features;
 import org.nuxeo.runtime.test.runner.FeaturesRunner;
 import org.nuxeo.runtime.test.runner.ServletContainerFeature;
 import org.nuxeo.runtime.test.runner.TransactionalFeature;
+import org.nuxeo.runtime.test.runner.WithFrameworkProperty;
 
 import jakarta.inject.Inject;
 import nuxeo.labs.pdf.toolkit.PDFToImages;
@@ -225,6 +227,59 @@ public class TestPDFToolkitEndpoint {
             assertEquals(200, response.getStatus());
             assertTrue(response.getType().startsWith("image/jpeg"));
         });
+    }
+
+    /**
+     * With a chunk size below the page count, serving every page crosses several chunks. Each of them is
+     * rendered on demand, so no page may fail — and above all, the endpoint never renders a single page
+     * on its own.
+     */
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldServeEveryPageAcrossChunks() {
+        for (int pageNum = 1; pageNum <= TEST_PDF_PAGE_COUNT; pageNum++) {
+            int page = pageNum;
+            httpClient.buildGetRequest(thumbPath(page)).executeAndConsume(response -> {
+                assertEquals("Failed on page " + page, 200, response.getStatus());
+                assertTrue(response.getType().startsWith("image/jpeg"));
+            });
+        }
+    }
+
+    /**
+     * The dialog prepares the first chunk then lets the browser fetch the images. A page of another
+     * chunk, asked before the UI got around to preparing it, must still be served.
+     */
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldServeAPageOfANotYetPreparedChunk() {
+        httpClient.buildGetRequest(thumbPath(1))
+                  .executeAndConsume(new HttpStatusCodeHandler(), status -> assertEquals(200, status.intValue()));
+
+        // Page 9 is in the chunk starting at 7, which nothing prepared
+        httpClient.buildGetRequest(thumbPath(9)).executeAndConsume(response -> {
+            assertEquals(200, response.getStatus());
+            assertTrue(response.getType().startsWith("image/jpeg"));
+        });
+    }
+
+    /** Two pages of two different chunks must not share an ETag. */
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldSendADistinctEtagPerPage() {
+        String etagPage2 = httpClient.buildGetRequest(thumbPath(2))
+                                     .executeAndThen(response -> response.getFirstHeader("ETag"));
+        String etagPage9 = httpClient.buildGetRequest(thumbPath(9))
+                                     .executeAndThen(response -> response.getFirstHeader("ETag"));
+
+        assertNotNull(etagPage2);
+        assertNotNull(etagPage9);
+        assertNotEquals(etagPage2, etagPage9);
+
+        // And revalidation still works once the chunk is warm
+        httpClient.buildGetRequest(thumbPath(9))
+                  .addHeader("If-None-Match", etagPage9)
+                  .executeAndConsume(new HttpStatusCodeHandler(), status -> assertEquals(304, status.intValue()));
     }
 
     /** Kept close to the constants it relies on. */

@@ -102,21 +102,40 @@ Actions are taken by the parent via events.
         right: -8px;
       }
 
+      /*
+       * Fixed box rather than an auto height: the tile must take its final size before its image
+       * arrives. Otherwise every incoming thumbnail reflows the whole grid, and the browser — seeing a
+       * compact grid — schedules far more image fetches than the viewport really needs.
+       * object-fit keeps the real aspect ratio of a page inside that box.
+       */
       .page-thumbnail {
-        width: 100%;
-        max-width: 120px;
-        height: auto;
-        min-height: 40px;
+        width: 120px;
+        height: 170px;
+        object-fit: contain;
         border: 1px solid #ccc;
         border-radius: 2px;
         background-color: #fafafa;
       }
 
+      /* A page whose chunk has not been rendered yet */
+      .page-thumbnail.placeholder {
+        background-color: #f0f0f0;
+        border-style: dashed;
+        animation: pdftoolkit-pulse 1.6s ease-in-out infinite;
+      }
+
+      @keyframes pdftoolkit-pulse {
+        0%   { opacity: 1; }
+        50%  { opacity: 0.55; }
+        100% { opacity: 1; }
+      }
+
       /* A tile whose image could not be fetched */
       .page-thumbnail.thumbnail-error {
         border-color: #d32f2f;
+        border-style: solid;
         background-color: #fdecea;
-        min-height: 120px;
+        animation: none;
       }
 
       .page-number {
@@ -135,7 +154,8 @@ Actions are taken by the parent via events.
 
     <template is="dom-if" if="[[!loading]]">
       <div class="thumbnails-container">
-        <template is="dom-repeat" items="[[pages]]" as="page">
+        <template is="dom-repeat" items="[[pages]]" as="page" initial-count="60"
+                  on-dom-change="_onDomChange">
           <div class$="page-item [[_getSelectedClass(page.selected)]]"
                draggable="true"
                data-index$="[[index]]"
@@ -146,8 +166,11 @@ Actions are taken by the parent via events.
                on-dragleave="_onDragLeave"
                on-drop="_onDrop"
                on-dragend="_onDragEnd">
-            <img class="page-thumbnail"
-                 src="[[page.image]]"
+            <!-- A single img, never with an empty src: an empty src makes some browsers refetch the
+                 current page. Until the chunk is rendered it holds a transparent pixel and wears the
+                 placeholder style. -->
+            <img class$="page-thumbnail [[_getThumbnailClass(page.image)]]"
+                 src$="[[_thumbnailSrc(page.image)]]"
                  loading="lazy"
                  on-error="_onThumbnailError"
                  alt$="Page [[_computePageNumber(index, page.originalPageNumber)]]">
@@ -162,470 +185,712 @@ Actions are taken by the parent via events.
   </template>
 
   <script>
-    Polymer({
-      is: 'nuxeo-pdf-toolkit-thumbnails',
+    (function() {
+      // 1x1 transparent GIF: a tile with no image yet must not carry an empty src.
+      var BLANK_IMAGE = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
-      properties: {
-        // Array of image sources (URLs or data URLs)
-        // provided by the parent.
-        sources: {
-          type: Array,
-          value: function() { return []; },
-          observer: '_sourcesChanged'
-        },
+      // How long we wait after the last scroll event before looking at what is on screen.
+      var SCROLL_DEBOUNCE_MS = 150;
 
-        // Internal representation of pages, used for selection + DnD.
-        pages: {
-          type: Array,
-          value: function() { return []; }
-        },
+      Polymer({
+        is: 'nuxeo-pdf-toolkit-thumbnails',
 
-        // Show a spinner while parent is loading thumbnails
-        loading: {
-          type: Boolean,
-          value: false
-        },
+        properties: {
+          // Array of image sources provided by the parent, one entry per page of the document.
+          // An empty entry means "this page belongs to a chunk that is not rendered yet".
+          sources: {
+            type: Array,
+            value: function() { return []; },
+            observer: '_sourcesChanged'
+          },
 
-        // true if at least one page is selected
-        hasSelection: {
-          type: Boolean,
-          value: false,
-          notify: true
-        },
+          // Internal representation of pages, used for selection + DnD.
+          pages: {
+            type: Array,
+            value: function() { return []; }
+          },
 
-        // true if current order differs from original order
-        hasReordered: {
-          type: Boolean,
-          value: false,
-          notify: true
-        },
+          // Show a spinner while parent is loading thumbnails
+          loading: {
+            type: Boolean,
+            value: false
+          },
 
-        // ==============================
-        // Private properties
-        // ==============================
-        _draggedIndex: {
-          type: Number,
-          value: -1
-        },
+          // true if at least one page is selected
+          hasSelection: {
+            type: Boolean,
+            value: false,
+            notify: true
+          },
 
-        _originalOrder: {
-          type: Array,
-          value: function() { return []; }
-        },
+          // true if current order differs from original order
+          hasReordered: {
+            type: Boolean,
+            value: false,
+            notify: true
+          },
 
-        _lastSelectedIndex: {
-          type: Number,
-          value: -1
-        },
+          // Trace the chunk loading in the browser console. Off by default.
+          debug: {
+            type: Boolean,
+            value: false
+          },
 
-        _autoScrollInterval: {
-          type: Object,
-          value: null
-        },
+          // ==============================
+          // Private properties
+          // ==============================
+          _draggedIndex: {
+            type: Number,
+            value: -1
+          },
 
-        _dragMouseY: {
-          type: Number,
-          value: 0
-        }
-      },
+          _originalOrder: {
+            type: Array,
+            value: function() { return []; }
+          },
 
-      // --- Public API for parent ---
+          _lastSelectedIndex: {
+            type: Number,
+            value: -1
+          },
 
-      detached: function() {
-        // A drag interrupted by a detach would leave the auto-scroll timer running forever
-        this._stopAutoScroll();
-      },
+          _autoScrollInterval: {
+            type: Object,
+            value: null
+          },
 
-      reset: function() {
-        this.set('pages', []);
-        this.set('_originalOrder', []);
-        this._lastSelectedIndex = -1;
-        this._draggedIndex = -1;
-        this._dragMouseY = 0;
-        this._stopAutoScroll();
-        this.set('hasSelection', false);
-        this.set('hasReordered', false);
-      },
+          _dragMouseY: {
+            type: Number,
+            value: 0
+          },
 
-      /**
-       * Return selected pages as a range string, e.g. "1,3-5".
-       */
-      getSelectedPageRanges: function() {
-        return this._getSelectedPageRanges();
-      },
+          // Bound reference, needed to remove the listener on detach
+          _scrollHandler: {
+            type: Object,
+            value: null
+          },
 
-      /**
-       * Return current order as an array of original indices, e.g. [2,1,3,...].
-       */
-      getNewPageOrder: function() {
-        if (!this.pages || !this.pages.length) {
-          return [];
-        }
-        return this.pages.map(function(page) {
-          return page.originalPageNumber;
-        });
-      },
+          // The scrolling ancestor the listener was attached to
+          _scrollContainer: {
+            type: Object,
+            value: null
+          },
 
-      // --- React to sources changes ---
-
-      _sourcesChanged: function(sources) {
-        this.reset();
-        if (!sources || !sources.length) {
-          return;
-        }
-
-        var pagesData = sources.map(function(src, index) {
-          return {
-            image: src,
-            selected: false,
-            originalPageNumber: index + 1
-          };
-        });
-
-        this.set('pages', pagesData);
-        this.set('_originalOrder', pagesData.map(function(p) { return p.originalPageNumber; }));
-        this.set('hasReordered', false);
-        this.set('hasSelection', false);
-      },
-
-      // --- Selection logic ---
-
-      _togglePageSelection: function(e) {
-        var index = e.model.index;
-        var isMetaKey = e.metaKey || e.ctrlKey; // Cmd on Mac / Ctrl on Windows
-        var isShiftKey = e.shiftKey;
-
-        if (isShiftKey && this._lastSelectedIndex >= 0) {
-          // Range selection
-          var start = Math.min(this._lastSelectedIndex, index);
-          var end = Math.max(this._lastSelectedIndex, index);
-          this.pages.forEach(function(page, i) {
-            if (i >= start && i <= end) {
-              this.set('pages.' + i + '.selected', true);
-            }
-          }.bind(this));
-        } else if (isMetaKey) {
-          // Toggle single
-          this.set('pages.' + index + '.selected', !this.pages[index].selected);
-          this._lastSelectedIndex = index;
-        } else {
-          // Single selection
-          this.pages.forEach(function(page, i) {
-            this.set('pages.' + i + '.selected', i === index);
-          }.bind(this));
-          this._lastSelectedIndex = index;
-        }
-
-        this.set('hasSelection', this._computeHasSelection());
-      },
-
-      _computePageNumber: function(index, originalPageNumber) {
-        var pageNumber = index + 1;
-
-        if (pageNumber !== originalPageNumber) {
-          return pageNumber + ' (' + originalPageNumber + ')';
-        }
-
-        return pageNumber;
-      },
-
-      _getSelectedClass: function(selected) {
-        return selected ? 'selected' : '';
-      },
-
-      /*
-       * Thumbnails are served by the PDF Toolkit REST endpoint, so a tile can fail on its own
-       * (expired session, server error). Flag it instead of leaving a silently empty rectangle.
-       */
-      _onThumbnailError: function(e) {
-        console.error('Failed to load a page thumbnail', e.target && e.target.src);
-        e.target.classList.add('thumbnail-error');
-      },
-
-      _computeHasSelection: function() {
-        return this.pages && this.pages.some(function(page) {
-          return page.selected;
-        });
-      },
-
-      _getSelectedPageRanges: function() {
-        var selectedIndices = [];
-        this.pages.forEach(function(page, index) {
-          if (page.selected) {
-            selectedIndices.push(index + 1);
+          // Bound reference of the window resize listener
+          _resizeHandler: {
+            type: Object,
+            value: null
           }
-        });
+        },
 
-        if (!selectedIndices.length) {
-          return '';
-        }
+        // --- Public API for parent ---
 
-        var ranges = [];
-        var start = selectedIndices[0];
-        var prev = selectedIndices[0];
+        detached: function() {
+          // A drag interrupted by a detach would leave the auto-scroll timer running forever
+          this._stopAutoScroll();
+          this._unbindScroll();
+        },
 
-        for (var i = 1; i <= selectedIndices.length; i++) {
-          if (i === selectedIndices.length || selectedIndices[i] !== prev + 1) {
-            if (start === prev) {
-              ranges.push(start.toString());
-            } else {
-              ranges.push(start + '-' + prev);
+        reset: function() {
+          this.set('pages', []);
+          this.set('_originalOrder', []);
+          this._lastSelectedIndex = -1;
+          this._draggedIndex = -1;
+          this._dragMouseY = 0;
+          this._stopAutoScroll();
+          this.set('hasSelection', false);
+          this.set('hasReordered', false);
+        },
+
+        /**
+         * Return selected pages as a range string, e.g. "1,3-5".
+         */
+        getSelectedPageRanges: function() {
+          return this._getSelectedPageRanges();
+        },
+
+        /**
+         * Return current order as an array of original indices, e.g. [2,1,3,...].
+         */
+        getNewPageOrder: function() {
+          if (!this.pages || !this.pages.length) {
+            return [];
+          }
+          return this.pages.map(function(page) {
+            return page.originalPageNumber;
+          });
+        },
+
+        /**
+         * Fill in the images of a freshly rendered chunk.
+         *
+         * Tiles are matched on their ORIGINAL page number, never on their position: after a drag and
+         * drop the two diverge, and matching on position would paste the images onto the wrong pages.
+         *
+         * @param {number} chunkStart first page of the chunk, starting at 1
+         * @param {number} chunkEnd last page of the chunk, inclusive
+         * @param {Array<string>} urls one URL per page of the document, indexed from page 1
+         * @return {number} how many tiles were actually filled. The caller must not mark a chunk as
+         *         done when this is 0, otherwise those pages would never be requested again.
+         */
+        applyChunk: function(chunkStart, chunkEnd, urls) {
+          if (!this.pages || !this.pages.length || !urls) {
+            return 0;
+          }
+
+          var byPageNumber = {};
+          this.pages.forEach(function(page, index) {
+            byPageNumber[page.originalPageNumber] = index;
+          });
+
+          var applied = 0;
+          for (var pageNum = chunkStart; pageNum <= chunkEnd; pageNum++) {
+            var index = byPageNumber[pageNum];
+            var url = urls[pageNum - 1];
+            if (index !== undefined && url) {
+              this.set('pages.' + index + '.image', url);
+              applied++;
             }
-            if (i < selectedIndices.length) {
-              start = selectedIndices[i];
+          }
+
+          if (this.debug) {
+            console.log('[pdf-toolkit] applyChunk ' + chunkStart + '-' + chunkEnd + ': ' + applied + ' tiles filled');
+          }
+
+          /*
+           * The visible area can span several chunks, and the first scan may have run before the
+           * dom-repeat finished its incremental render. Look again at what is on screen; the
+           * "no image yet" guard stops this from looping.
+           */
+          this._scheduleChunkScan();
+
+          return applied;
+        },
+
+        /**
+         * Ask the parent for whatever is on screen. Called after the first render and after a
+         * reorder, when the visible pages changed without any scrolling.
+         */
+        requestVisibleChunks: function() {
+          this._scheduleChunkScan();
+        },
+
+        // --- React to sources changes ---
+
+        _sourcesChanged: function(sources) {
+          this.reset();
+          if (!sources || !sources.length) {
+            this._unbindScroll();
+            return;
+          }
+
+          var pagesData = sources.map(function(src, index) {
+            return {
+              image: src || '',
+              selected: false,
+              originalPageNumber: index + 1
+            };
+          });
+
+          this.set('pages', pagesData);
+          this.set('_originalOrder', pagesData.map(function(p) { return p.originalPageNumber; }));
+          this.set('hasReordered', false);
+          this.set('hasSelection', false);
+
+          // The grid only exists after the dom-repeat rendered, and initial-count makes that
+          // asynchronous.
+          this.async(function() {
+            this._bindScroll();
+            this._scheduleChunkScan();
+          }.bind(this), 50);
+        },
+
+        _thumbnailSrc: function(image) {
+          return image || BLANK_IMAGE;
+        },
+
+        _getThumbnailClass: function(image) {
+          return image ? '' : 'placeholder';
+        },
+
+        // --- Lazy loading of the chunks ---
+
+        _bindScroll: function() {
+          if (this._scrollContainer) {
+            return;
+          }
+          var container = this._getScrollContainer();
+          if (!container) {
+            return;
+          }
+          // Keep the node itself: on detach, walking up the tree no longer reaches it, and the
+          // listener would stay behind forever.
+          this._scrollContainer = container;
+          this._scrollHandler = this._scheduleChunkScan.bind(this);
+          container.addEventListener('scroll', this._scrollHandler, { passive: true });
+
+          // Resizing changes the number of columns, hence what is on screen, without any scrolling
+          this._resizeHandler = this._scheduleChunkScan.bind(this);
+          window.addEventListener('resize', this._resizeHandler, { passive: true });
+
+          if (this.debug) {
+            console.log('[pdf-toolkit] scroll listener attached');
+          }
+        },
+
+        _unbindScroll: function() {
+          if (this._scrollContainer && this._scrollHandler) {
+            this._scrollContainer.removeEventListener('scroll', this._scrollHandler);
+          }
+          if (this._resizeHandler) {
+            window.removeEventListener('resize', this._resizeHandler);
+          }
+          this._scrollContainer = null;
+          this._scrollHandler = null;
+          this._resizeHandler = null;
+        },
+
+        /**
+         * The dom-repeat renders in batches because of initial-count, so the first scan only sees the
+         * first tiles. Re-scan whenever it added nodes — and after a reorder, which replaces them all.
+         */
+        _onDomChange: function() {
+          this._scheduleChunkScan();
+        },
+
+        _scheduleChunkScan: function() {
+          this.debounce('pdftoolkit-chunk-scan', this._scanVisibleChunks, SCROLL_DEBOUNCE_MS);
+        },
+
+        _scanVisibleChunks: function() {
+          /*
+           * Never request a chunk mid-drag: applying its images mutates a bound property, which
+           * re-renders the dom-repeat and aborts the gesture.
+           */
+          if (this._draggedIndex >= 0 || !this.pages || !this.pages.length) {
+            return;
+          }
+
+          var pageNumbers = this._visiblePageNumbers();
+
+          if (this.debug) {
+            console.log('[pdf-toolkit] scan: ' + pageNumbers.length + ' visible pages without an image'
+              + (pageNumbers.length ? ' (' + pageNumbers[0] + '..' + pageNumbers[pageNumbers.length - 1] + ')' : ''));
+          }
+
+          if (pageNumbers.length) {
+            this.fire('chunk-needed', { pages: pageNumbers });
+          }
+        },
+
+        /**
+         * Page numbers of the tiles on screen, plus a margin above and below.
+         *
+         * The visible tiles are found by binary search on their vertical position, NOT by computing
+         * them from a measured grid geometry (columns x row height). A computed range silently
+         * collapses to nothing as soon as one of its inputs is off — the symptom being tiles that
+         * never load at some scroll positions and load fine at others. Measure, do not deduce.
+         *
+         * Cost: about 10 measurements to locate the first visible tile among a thousand, then one per
+         * visible tile. Calling getBoundingClientRect() on every tile would be a thousand forced
+         * reflows per scroll event.
+         */
+        _visiblePageNumbers: function() {
+          var container = this._getScrollContainer();
+          var tiles = this.root.querySelectorAll('.page-item');
+          if (!container || !tiles.length) {
+            return [];
+          }
+
+          var containerRect = container.getBoundingClientRect();
+          // One screen of margin on each side, so the next pages are ready before they are reached
+          var margin = containerRect.height;
+          var viewTop = containerRect.top - margin;
+          var viewBottom = containerRect.bottom + margin;
+
+          // Binary search for the first tile whose bottom edge is at or below the top of the view
+          var low = 0;
+          var high = tiles.length - 1;
+          var first = tiles.length;
+          while (low <= high) {
+            var mid = (low + high) >> 1;
+            if (tiles[mid].getBoundingClientRect().bottom >= viewTop) {
+              first = mid;
+              high = mid - 1;
+            } else {
+              low = mid + 1;
+            }
+          }
+
+          // Then walk forward while tiles still start before the bottom of the view
+          var pageNumbers = [];
+          for (var i = first; i < tiles.length; i++) {
+            if (tiles[i].getBoundingClientRect().top > viewBottom) {
+              break;
+            }
+            // The rank in the NodeList is not the rank in `pages`: read the bound index, like the
+            // drag and drop handlers do.
+            var index = parseInt(tiles[i].dataset.index, 10);
+            var page = isNaN(index) ? null : this.pages[index];
+            // Only ask for pages that are still waiting for their image
+            if (page && !page.image) {
+              pageNumbers.push(page.originalPageNumber);
+            }
+          }
+
+          return pageNumbers;
+        },
+
+        // --- Selection logic ---
+
+        _togglePageSelection: function(e) {
+          var index = e.model.index;
+          var isMetaKey = e.metaKey || e.ctrlKey; // Cmd on Mac / Ctrl on Windows
+          var isShiftKey = e.shiftKey;
+
+          if (isShiftKey && this._lastSelectedIndex >= 0) {
+            // Range selection
+            var start = Math.min(this._lastSelectedIndex, index);
+            var end = Math.max(this._lastSelectedIndex, index);
+            this.pages.forEach(function(page, i) {
+              if (i >= start && i <= end) {
+                this.set('pages.' + i + '.selected', true);
+              }
+            }.bind(this));
+          } else if (isMetaKey) {
+            // Toggle single
+            this.set('pages.' + index + '.selected', !this.pages[index].selected);
+            this._lastSelectedIndex = index;
+          } else {
+            // Single selection
+            this.pages.forEach(function(page, i) {
+              this.set('pages.' + i + '.selected', i === index);
+            }.bind(this));
+            this._lastSelectedIndex = index;
+          }
+
+          this.set('hasSelection', this._computeHasSelection());
+        },
+
+        _computePageNumber: function(index, originalPageNumber) {
+          var pageNumber = index + 1;
+
+          if (pageNumber !== originalPageNumber) {
+            return pageNumber + ' (' + originalPageNumber + ')';
+          }
+
+          return pageNumber;
+        },
+
+        _getSelectedClass: function(selected) {
+          return selected ? 'selected' : '';
+        },
+
+        /*
+         * Thumbnails are served by the PDF Toolkit REST endpoint, so a tile can fail on its own
+         * (expired session, server error). Flag it instead of leaving a silently empty rectangle.
+         */
+        _onThumbnailError: function(e) {
+          // A tile still showing the placeholder pixel has nothing to fail at
+          if (!e.target || !e.target.src || e.target.src === BLANK_IMAGE) {
+            return;
+          }
+          console.error('Failed to load a page thumbnail', e.target.src);
+          e.target.classList.remove('placeholder');
+          e.target.classList.add('thumbnail-error');
+        },
+
+        _computeHasSelection: function() {
+          return this.pages && this.pages.some(function(page) {
+            return page.selected;
+          });
+        },
+
+        _getSelectedPageRanges: function() {
+          var selectedIndices = [];
+          this.pages.forEach(function(page, index) {
+            if (page.selected) {
+              selectedIndices.push(index + 1);
+            }
+          });
+
+          if (!selectedIndices.length) {
+            return '';
+          }
+
+          var ranges = [];
+          var start = selectedIndices[0];
+          var prev = selectedIndices[0];
+
+          for (var i = 1; i <= selectedIndices.length; i++) {
+            if (i === selectedIndices.length || selectedIndices[i] !== prev + 1) {
+              if (start === prev) {
+                ranges.push(start.toString());
+              } else {
+                ranges.push(start + '-' + prev);
+              }
+              if (i < selectedIndices.length) {
+                start = selectedIndices[i];
+                prev = selectedIndices[i];
+              }
+            } else {
               prev = selectedIndices[i];
             }
-          } else {
-            prev = selectedIndices[i];
           }
-        }
 
-        return ranges.join(',');
-      },
+          return ranges.join(',');
+        },
 
-      // --- Double-click → preview ---
-      _onPageDblClick: function(e) {
-        var index = e.model.index;
-        var page = this.pages[index];
-        if (!page) {
-          return;
-        }
-
-        this.fire('page-preview', {
-          pageNum: page.originalPageNumber
-        });
-      },
-
-      // --- Drag & drop + auto-scroll ---
-
-      /**
-       * Indices of the pages the current drag is about, sorted ascending.
-       * Grabbing a tile that belongs to the selection moves the whole selection.
-       */
-      _getMovingIndices: function() {
-        if (this._draggedIndex < 0) {
-          return [];
-        }
-
-        var dragged = this.pages[this._draggedIndex];
-        if (!dragged || !dragged.selected) {
-          return [this._draggedIndex];
-        }
-
-        var indices = [];
-        this.pages.forEach(function(page, index) {
-          if (page.selected) {
-            indices.push(index);
+        // --- Double-click → preview ---
+        _onPageDblClick: function(e) {
+          var index = e.model.index;
+          var page = this.pages[index];
+          if (!page) {
+            return;
           }
-        });
 
-        return indices;
-      },
+          this.fire('page-preview', {
+            pageNum: page.originalPageNumber
+          });
+        },
 
-      _tileAt: function(index) {
-        return this.root.querySelector('.page-item[data-index="' + index + '"]');
-      },
+        // --- Drag & drop + auto-scroll ---
 
-      _clearDragClasses: function() {
-        var items = this.root.querySelectorAll('.page-item');
-        Array.prototype.forEach.call(items, function(item) {
-          item.classList.remove('dragging', 'dragging-source', 'drag-over-before', 'drag-over-after');
-        });
-      },
-
-      _onDragStart: function(e) {
-        this._draggedIndex = parseInt(e.currentTarget.dataset.index, 10);
-
-        /*
-         * Grabbing a tile outside the selection makes it the selection, the way a desktop file
-         * manager does. Without this, tiles would stay highlighted while not moving.
-         * this.set() on a path only updates the class of the existing node, it does not recreate
-         * it, so the drag is not interrupted.
+        /**
+         * Indices of the pages the current drag is about, sorted ascending.
+         * Grabbing a tile that belongs to the selection moves the whole selection.
          */
-        var dragged = this.pages[this._draggedIndex];
-        if (dragged && !dragged.selected) {
+        _getMovingIndices: function() {
+          if (this._draggedIndex < 0) {
+            return [];
+          }
+
+          var dragged = this.pages[this._draggedIndex];
+          if (!dragged || !dragged.selected) {
+            return [this._draggedIndex];
+          }
+
+          var indices = [];
           this.pages.forEach(function(page, index) {
-            this.set('pages.' + index + '.selected', index === this._draggedIndex);
+            if (page.selected) {
+              indices.push(index);
+            }
+          });
+
+          return indices;
+        },
+
+        _tileAt: function(index) {
+          return this.root.querySelector('.page-item[data-index="' + index + '"]');
+        },
+
+        _clearDragClasses: function() {
+          var items = this.root.querySelectorAll('.page-item');
+          Array.prototype.forEach.call(items, function(item) {
+            item.classList.remove('dragging', 'dragging-source', 'drag-over-before', 'drag-over-after');
+          });
+        },
+
+        _onDragStart: function(e) {
+          this._draggedIndex = parseInt(e.currentTarget.dataset.index, 10);
+
+          /*
+           * Grabbing a tile outside the selection makes it the selection, the way a desktop file
+           * manager does. Without this, tiles would stay highlighted while not moving.
+           * this.set() on a path only updates the class of the existing node, it does not recreate
+           * it, so the drag is not interrupted.
+           */
+          var dragged = this.pages[this._draggedIndex];
+          if (dragged && !dragged.selected) {
+            this.pages.forEach(function(page, index) {
+              this.set('pages.' + index + '.selected', index === this._draggedIndex);
+            }.bind(this));
+            this._lastSelectedIndex = this._draggedIndex;
+            this.set('hasSelection', true);
+          }
+
+          var moving = this._getMovingIndices();
+          moving.forEach(function(index) {
+            var tile = this._tileAt(index);
+            if (tile) {
+              tile.classList.add('dragging');
+            }
           }.bind(this));
-          this._lastSelectedIndex = this._draggedIndex;
-          this.set('hasSelection', true);
-        }
 
-        var moving = this._getMovingIndices();
-        moving.forEach(function(index) {
-          var tile = this._tileAt(index);
-          if (tile) {
-            tile.classList.add('dragging');
+          // Only tell the user how many pages are moving when there is more than one
+          if (moving.length > 1) {
+            var badge = e.currentTarget.querySelector('.drag-count');
+            if (badge) {
+              badge.textContent = moving.length;
+            }
+            e.currentTarget.classList.add('dragging-source');
           }
-        }.bind(this));
 
-        // Only tell the user how many pages are moving when there is more than one
-        if (moving.length > 1) {
-          var badge = e.currentTarget.querySelector('.drag-count');
-          if (badge) {
-            badge.textContent = moving.length;
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', ''); // needed for Firefox
+          this._startAutoScroll();
+        },
+
+        _onDragOver: function(e) {
+          if (e.preventDefault) {
+            e.preventDefault();
           }
-          e.currentTarget.classList.add('dragging-source');
-        }
+          e.dataTransfer.dropEffect = 'move';
 
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', ''); // needed for Firefox
-        this._startAutoScroll();
-      },
+          this._dragMouseY = e.clientY;
 
-      _onDragOver: function(e) {
-        if (e.preventDefault) {
-          e.preventDefault();
-        }
-        e.dataTransfer.dropEffect = 'move';
+          var rect = e.currentTarget.getBoundingClientRect();
+          var mouseX = e.clientX;
+          var itemCenterX = rect.left + rect.width / 2;
 
-        this._dragMouseY = e.clientY;
+          e.currentTarget.classList.remove('drag-over-before', 'drag-over-after');
+          if (mouseX < itemCenterX) {
+            e.currentTarget.classList.add('drag-over-before');
+          } else {
+            e.currentTarget.classList.add('drag-over-after');
+          }
 
-        var rect = e.currentTarget.getBoundingClientRect();
-        var mouseX = e.clientX;
-        var itemCenterX = rect.left + rect.width / 2;
-
-        e.currentTarget.classList.remove('drag-over-before', 'drag-over-after');
-        if (mouseX < itemCenterX) {
-          e.currentTarget.classList.add('drag-over-before');
-        } else {
-          e.currentTarget.classList.add('drag-over-after');
-        }
-
-        return false;
-      },
-
-      _onDragLeave: function(e) {
-        e.currentTarget.classList.remove('drag-over-before', 'drag-over-after');
-      },
-
-      _onDrop: function(e) {
-        if (e.stopPropagation) {
-          e.stopPropagation();
-        }
-        // Without this Firefox navigates to the dataTransfer content on drop
-        if (e.preventDefault) {
-          e.preventDefault();
-        }
-        e.currentTarget.classList.remove('drag-over-before', 'drag-over-after');
-
-        var moving = this._getMovingIndices();
-        if (!moving.length) {
           return false;
-        }
+        },
 
-        var dropIndex = parseInt(e.currentTarget.dataset.index, 10);
-        var rect = e.currentTarget.getBoundingClientRect();
-        var insertIndex = e.clientX >= rect.left + rect.width / 2 ? dropIndex + 1 : dropIndex;
+        _onDragLeave: function(e) {
+          e.currentTarget.classList.remove('drag-over-before', 'drag-over-after');
+        },
 
-        /*
-         * insertIndex is expressed in the coordinates of the current array. Pulling the moved pages
-         * out shifts everything that followed them, so the anchor must be moved left by the number
-         * of moved pages that sat before it.
-         */
-        var isMoving = {};
-        var movedBefore = 0;
-        moving.forEach(function(index) {
-          isMoving[index] = true;
-          if (index < insertIndex) {
-            movedBefore++;
+        _onDrop: function(e) {
+          if (e.stopPropagation) {
+            e.stopPropagation();
           }
-        });
-
-        // The moved pages are regrouped contiguously at the drop point, keeping their relative order
-        var movedPages = moving.map(function(index) {
-          return this.pages[index];
-        }, this);
-        var newPages = this.pages.filter(function(page, index) {
-          return !isMoving[index];
-        });
-        Array.prototype.splice.apply(newPages, [insertIndex - movedBefore, 0].concat(movedPages));
-
-        var currentOrder = newPages.map(function(p) { return p.originalPageNumber; });
-        var previousOrder = this.pages.map(function(p) { return p.originalPageNumber; });
-        if (this._arraysEqual(currentOrder, previousOrder)) {
-          // Nothing actually moved, do not re-render for nothing
-          return false;
-        }
-
-        this.set('pages', newPages);
-        this.set('hasReordered', !this._arraysEqual(currentOrder, this._originalOrder));
-        // Indices just shifted, the shift-click anchor no longer means anything
-        this._lastSelectedIndex = -1;
-
-        return false;
-      },
-
-      _onDragEnd: function() {
-        this._draggedIndex = -1;
-        this._stopAutoScroll();
-        /*
-         * Clear on every tile, not just the one that was grabbed: _onDrop re-rendered the
-         * dom-repeat, so nodes may have been recycled and the grabbed node may now be another page.
-         * The second pass covers a render that Polymer deferred past this handler.
-         */
-        this._clearDragClasses();
-        this.async(this._clearDragClasses.bind(this));
-      },
-
-      _startAutoScroll: function() {
-        this._stopAutoScroll();
-        this._autoScrollInterval = setInterval(function() {
-          this._performAutoScroll();
-        }.bind(this), 50);
-      },
-
-      _stopAutoScroll: function() {
-        if (this._autoScrollInterval) {
-          clearInterval(this._autoScrollInterval);
-          this._autoScrollInterval = null;
-        }
-      },
-
-      _getScrollContainer: function() {
-        // Walk up from this element to find the surrounding .dialog-content
-        var node = this.parentNode;
-        while (node) {
-          if (node.classList && node.classList.contains('dialog-content')) {
-            return node;
+          // Without this Firefox navigates to the dataTransfer content on drop
+          if (e.preventDefault) {
+            e.preventDefault();
           }
-          node = node.parentNode || node.host;
-        }
-        return null;
-      },
+          e.currentTarget.classList.remove('drag-over-before', 'drag-over-after');
 
-      _performAutoScroll: function() {
-        if (!this._dragMouseY) {
-          return;
-        }
-
-        var dialogContent = this._getScrollContainer();
-        if (!dialogContent) {
-          return;
-        }
-
-        var rect = dialogContent.getBoundingClientRect();
-        var scrollThreshold = 100; // px from edge to trigger
-        var scrollSpeed = 20;      // px per tick
-
-        if (this._dragMouseY < rect.top + scrollThreshold) {
-          dialogContent.scrollTop -= scrollSpeed;
-        } else if (this._dragMouseY > rect.bottom - scrollThreshold) {
-          dialogContent.scrollTop += scrollSpeed;
-        }
-      },
-
-      _arraysEqual: function(a, b) {
-        if (!a || !b || a.length !== b.length) {
-          return false;
-        }
-        for (var i = 0; i < a.length; i++) {
-          if (a[i] !== b[i]) {
+          var moving = this._getMovingIndices();
+          if (!moving.length) {
             return false;
           }
+
+          var dropIndex = parseInt(e.currentTarget.dataset.index, 10);
+          var rect = e.currentTarget.getBoundingClientRect();
+          var insertIndex = e.clientX >= rect.left + rect.width / 2 ? dropIndex + 1 : dropIndex;
+
+          /*
+           * insertIndex is expressed in the coordinates of the current array. Pulling the moved pages
+           * out shifts everything that followed them, so the anchor must be moved left by the number
+           * of moved pages that sat before it.
+           */
+          var isMoving = {};
+          var movedBefore = 0;
+          moving.forEach(function(index) {
+            isMoving[index] = true;
+            if (index < insertIndex) {
+              movedBefore++;
+            }
+          });
+
+          // The moved pages are regrouped contiguously at the drop point, keeping their relative order
+          var movedPages = moving.map(function(index) {
+            return this.pages[index];
+          }, this);
+          var newPages = this.pages.filter(function(page, index) {
+            return !isMoving[index];
+          });
+          Array.prototype.splice.apply(newPages, [insertIndex - movedBefore, 0].concat(movedPages));
+
+          var currentOrder = newPages.map(function(p) { return p.originalPageNumber; });
+          var previousOrder = this.pages.map(function(p) { return p.originalPageNumber; });
+          if (this._arraysEqual(currentOrder, previousOrder)) {
+            // Nothing actually moved, do not re-render for nothing
+            return false;
+          }
+
+          this.set('pages', newPages);
+          this.set('hasReordered', !this._arraysEqual(currentOrder, this._originalOrder));
+          // Indices just shifted, the shift-click anchor no longer means anything
+          this._lastSelectedIndex = -1;
+
+          return false;
+        },
+
+        _onDragEnd: function() {
+          this._draggedIndex = -1;
+          this._stopAutoScroll();
+          /*
+           * Clear on every tile, not just the one that was grabbed: _onDrop re-rendered the
+           * dom-repeat, so nodes may have been recycled and the grabbed node may now be another page.
+           * The second pass covers a render that Polymer deferred past this handler.
+           */
+          this._clearDragClasses();
+          this.async(this._clearDragClasses.bind(this));
+
+          /*
+           * A reorder changes which pages sit on screen without any scrolling, and chunk requests were
+           * suspended for the whole gesture. Ask again for whatever is visible now.
+           */
+          this._scheduleChunkScan();
+        },
+
+        _startAutoScroll: function() {
+          this._stopAutoScroll();
+          this._autoScrollInterval = setInterval(function() {
+            this._performAutoScroll();
+          }.bind(this), 50);
+        },
+
+        _stopAutoScroll: function() {
+          if (this._autoScrollInterval) {
+            clearInterval(this._autoScrollInterval);
+            this._autoScrollInterval = null;
+          }
+        },
+
+        _getScrollContainer: function() {
+          // Walk up from this element to find the surrounding .dialog-content
+          var node = this.parentNode;
+          while (node) {
+            if (node.classList && node.classList.contains('dialog-content')) {
+              return node;
+            }
+            node = node.parentNode || node.host;
+          }
+          return null;
+        },
+
+        _performAutoScroll: function() {
+          if (!this._dragMouseY) {
+            return;
+          }
+
+          var dialogContent = this._getScrollContainer();
+          if (!dialogContent) {
+            return;
+          }
+
+          var rect = dialogContent.getBoundingClientRect();
+          var scrollThreshold = 100; // px from edge to trigger
+          var scrollSpeed = 20;      // px per tick
+
+          if (this._dragMouseY < rect.top + scrollThreshold) {
+            dialogContent.scrollTop -= scrollSpeed;
+          } else if (this._dragMouseY > rect.bottom - scrollThreshold) {
+            dialogContent.scrollTop += scrollSpeed;
+          }
+        },
+
+        _arraysEqual: function(a, b) {
+          if (!a || !b || a.length !== b.length) {
+            return false;
+          }
+          for (var i = 0; i < a.length; i++) {
+            if (a[i] !== b[i]) {
+              return false;
+            }
+          }
+          return true;
         }
-        return true;
-      }
-    });
+      });
+    })();
   </script>
 </dom-module>

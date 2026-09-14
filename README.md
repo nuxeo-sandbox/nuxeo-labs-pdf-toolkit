@@ -37,6 +37,9 @@ Also, double-click on a thumbnail displays a bigger preview of the page, with a 
 > [!NOTE]
 > Thumbnails and previews are cached in a TransientStore. So, opening the same PDF shortly after the first opening displays the thumbnails very quickly. Displaying the same preview is also faster.
 
+> [!NOTE]
+> Long PDF are handled by chunks. Opening the dialog lays out a tile for **every** page right away, then renders their thumbnails 50 pages at a time as you scroll — including when you drag the scrollbar straight to the end. Since every page has its tile from the start, selecting a wide range with shift-click, or dragging a page from the beginning to the very end, keeps working whatever the document length. See "Configuration Properties" to tune the chunk size and the page limit.
+
 <br />
 
 ## Tuning the UI
@@ -87,6 +90,38 @@ To override it, copy the contribution and tune it, typically in your Studio proj
 
 <br />
 
+### Element Attributes
+
+`<nuxeo-pdf-toolkit>` accepts the following attributes. They are set on the element inside the slot contribution, as shown in the `icon` example above.
+
+| Attribute | Default | Description |
+| --- | --- | --- |
+| `document` | — | The document to work on. Required. |
+| `icon` | `icons:build` | Icon of the action button. |
+| `label` | `PDF Toolkit` | Label of the button, used as a translation key and as the tooltip. |
+| `showLabel` | `false` | Display the label next to the icon. |
+| `thumbnailWidth` | `256` | Max width, in pixels, of the thumbnails asked of the server. |
+| `thumbnailHeight` | `256` | Max height, in pixels. The CSS displays the tiles at 120px, so 256 still covers a high density screen. |
+| `thumbnailDpi` | `72` | Rendering resolution. **The rendering cost grows with the square of the dpi**, so this is the setting to change if the grid is slow to fill — not the width and height, which barely matter. |
+| `debug` | `false` | Trace the chunk loading in the browser console. See "Checking the chunking". |
+
+The `thumbnail*` attributes only affect this dialog. The defaults of the operations themselves stay at 512 px / 150 dpi, so Studio projects and scripts calling `PDFLabs.PrepareThumbnails` or `PDFLabs.GetThumbnails` are not impacted.
+
+Example, sharper thumbnails and console traces:
+
+```html
+<nuxeo-slot-content name="demoPdfToolkit" slot="DOCUMENT_ACTIONS" order="1">
+  . . .
+        <nuxeo-pdf-toolkit document="[[document]]" thumbnail-width="384" thumbnail-height="384"
+                           thumbnail-dpi="110" debug></nuxeo-pdf-toolkit>
+  . . .
+</nuxeo-slot-content>
+```
+
+Note the attribute names are dash-cased (`thumbnail-width`), as always in Polymer.
+
+<br />
+
 ### The Whole Dialog Itself
 
 If you want to tune the dialog, you must import it in your Studio project, and it must be created at the correct place, so it overrides the file deployed by the plugin. Notice the whole plugin actually uses several elements, you can tune each of them of course (see [here](/nuxeo-labs-pdf-toolkit-webui/src/main/resources/web/nuxeo.war/ui/nuxeo-pdf-toolkit)). To override only nuxeo-pdf-toolkit, for example, you would do the following:
@@ -117,21 +152,31 @@ Every action of the dialog is backed by an operation that can be used, of course
 
 ### `PDFLabs.PrepareThumbnails`
 
-This is the operation the dialog uses, and the one to prefer when displaying thumbnails. It renders every page **once**, fills the server side cache, and returns one URL per page instead of a base64 payload. The images are then fetched by the browser, which can cache them.
+This is the operation the dialog uses, and the one to prefer when displaying thumbnails. It renders **one chunk of pages** (50 by default), fills the server side cache, and returns one URL per page of the document instead of a base64 payload. The images are then fetched by the browser, which can cache them.
+
+Only the chunk holding `startPage` is rendered, so a 1000 pages PDF opens as fast as a 50 pages one. The URLs of **all** the pages are returned nonetheless, so the caller can lay out its placeholders at the right size and call the operation again, with another `startPage`, as the user scrolls.
 
 * Input: a `document` (an URL needs a document id — use `PDFLabs.GetThumbnails` when all you have is a blob).
-* Output: JSON `blob`, `{"pageCount": n, "urls": [...]}`.
+* Output: JSON `blob`, `{"pageCount": n, "chunkSize": n, "chunkStart": n, "chunkEnd": n, "rendered": true|false, "renderTimeMs": n, "urls": [...]}`.
 * Parameters:
   * `xpath`: String, optional. `file:content` by default.
+  * `startPage`: Integer, optional. Default 1. Any page of the wanted chunk — it is snapped to the start of its chunk, so 1 and 50 both render the first chunk when the chunk size is 50.
   * `width`: Integer, optional. Default 512, maximum 2000.
   * `height`: Integer, optional. Default 512, maximum 2000.
   * `dpi`: Integer, optional. Default 150, maximum 300.
+
+`rendered` and `renderTimeMs` are diagnostics: `"rendered": false` means the chunk came straight from the cache, so **the PDF was not opened at all**. They are visible in the browser network tab, which is the quickest way to check the chunking on a running server.
 
 The URLs are **relative to the Nuxeo application root**, prefix them with the server base URL:
 
 ```json
 {
   "pageCount": 2,
+  "chunkSize": 50,
+  "chunkStart": 1,
+  "chunkEnd": 2,
+  "rendered": true,
+  "renderTimeMs": 47,
   "urls": [
     "site/pdftoolkit/thumb/8a7e.../1?w=512&h=512&dpi=150&v=d41d8cd98f00b204e9800998ecf8427e",
     "site/pdftoolkit/thumb/8a7e.../2?w=512&h=512&dpi=150&v=d41d8cd98f00b204e9800998ecf8427e"
@@ -144,9 +189,46 @@ The `v` parameter is the **digest of the PDF**. It makes the URL content-address
 Each URL is served by the plugin REST endpoint, `GET /nuxeo/site/pdftoolkit/thumb/{docId}/{pageNumber}`, which:
 
 * resolves the document through the **current user session**, so the read permission is enforced by the repository;
-* only **reads** the cache filled by the operation — it never re-opens the PDF, which is what makes serving 150 pages cheap;
-* falls back on rendering the whole document if the cache entry expired in the meantime;
+* only **reads** the cache filled by the operation on the nominal path — it never reopens the PDF, which is what makes serving a long document cheap;
+* falls back on rendering the **whole chunk** holding the page — never that single page — if the cache entry expired in the meantime, and takes a lock so that several browser connections hitting the same cold chunk only trigger one rendering;
 * sends an `ETag` in every case, plus `Cache-Control: private, max-age=3600` when `v` is present, or `private, no-cache` when it is not — a plain URL is then revalidated on each request, which costs a `304` rather than a full transfer.
+
+> [!NOTE]
+> Serving every page of a document costs one PDF opening **per chunk**, never one per page: 20 openings for a 1000 pages PDF with the default chunk size. See "Checking the chunking" below to observe it.
+
+<br />
+
+### Checking the chunking
+
+Four ways, from the least to the most intrusive.
+
+**1. The browser network tab.** Look at the response of `PDFLabs.PrepareThumbnails`: `"rendered": true` means the PDF was opened and that chunk rendered, `"rendered": false` means it came from the cache. Scrolling through a document must produce one call per chunk, and the thumbnail image requests themselves must never trigger a rendering.
+
+**2. The `debug` attribute** on `<nuxeo-pdf-toolkit>` (see "Element Attributes"). It traces the whole client side chain in the browser console, which is the only way to see why a tile stays empty:
+
+```
+[pdf-toolkit] scan: 24 visible pages without an image (151..174)
+[pdf-toolkit] chunk 151 queued (queue=1)
+[pdf-toolkit] chunk 151-200 of 1000 ready, rendered=true in 238ms
+[pdf-toolkit] applyChunk 151-200: 50 tiles filled
+[pdf-toolkit] chunk 151 skipped (already prepared)
+```
+
+**3. `nuxeo.pdftoolkit.verboseRendering=true`** in `nuxeo.conf`. Every rendering is then logged at `warn`, so it shows up without touching the log configuration:
+
+```
+Rendered thumbnails 151-200 of 1000 (256x256 @ 72 dpi) in 240 ms for blob "x.pdf", cached: true [prepare].
+```
+
+The `[...]` marker says what triggered it: `prepare` on the nominal path, `endpoint-fallback` if the browser asked for a page whose chunk had expired, `full-document` for `PDFLabs.GetThumbnails`. An `endpoint-fallback` is always logged at `warn`, even with the property off, because it should not happen on the nominal path.
+
+**4. The log configuration.** The plugin lives in the `nuxeo.labs.pdf.toolkit` package, which **no `<Logger>` of the stock Nuxeo `log4j2.xml` covers** — it therefore inherits the root logger, at `warn`, and all its `info` messages are dropped. To see them without the property above, add to `$NUXEO_HOME/lib/log4j2.xml`:
+
+```xml
+<Logger name="nuxeo.labs.pdf.toolkit" level="info" />
+```
+
+That file carries `monitorInterval="30"`, so the change is picked up within 30 seconds, no restart needed. Use `level="debug"` to also see the cache hits.
 
 <br />
 
@@ -168,7 +250,7 @@ Returns a JSON array of Base64 encoded jpeg thumbnails. To use one in an `<img s
 Values above the maximum are silently clamped rather than rejected.
 
 > [!WARNING]
-> As all is in memory as base64, the number of pages is limited: the operation fails on a PDF holding more than 150 pages. See "Configuration Properties" below to change this limit.
+> As all is in memory as base64, the number of pages is limited: the operation fails on a PDF holding more than 150 pages. See "Configuration Properties" below to change this limit. `PDFLabs.PrepareThumbnails` has no such constraint, it renders by chunks.
 
 <br />
 
@@ -302,10 +384,15 @@ Save to file, create minor version:
 
 | Property | Default | Description |
 | --- | --- | --- |
-| `nuxeo.pdftoolkit.maxPages` | 150 | Maximum number of pages `PDFLabs.GetThumbnails` accepts to render. The whole result is built in memory as base64, so raise this only if your server can afford it. Does not apply to `ExtractPagesByRange`, `RemovePages` and `ReorderPages`, which never rasterize anything. |
-| `nuxeo.pdftoolkit.cache.targetMaxSizeMB` | 500 | Target size of the `PDFToolkitCache` transient store holding the thumbnails and the previews. |
+| `nuxeo.pdftoolkit.thumbnails.chunkSize` | 50 | Number of pages rendered in one go by `PDFLabs.PrepareThumbnails`. This is the unit of work of the whole thumbnails pipeline: the PDF is opened, parsed and rendered once per chunk, **never once per page**. Lower it for a snappier scroll, raise it to fetch the blob from the storage less often. |
+| `nuxeo.pdftoolkit.thumbnails.maxPages` | 2000 | Maximum number of pages `PDFLabs.PrepareThumbnails` accepts to expose. Rendering is bounded by the chunk, so this is not about the server: every page becomes a tile in the dialog, and a few thousand tiles are enough to freeze a browser tab. |
+| `nuxeo.pdftoolkit.maxPages` | 150 | Maximum number of pages `PDFLabs.GetThumbnails` accepts to render. The whole result is built in memory as base64, so raise this only if your server can afford it. **Does not apply to `PDFLabs.PrepareThumbnails`**, which renders by chunks, nor to `ExtractPagesByRange`, `RemovePages` and `ReorderPages`, which never rasterize anything. |
+| `nuxeo.pdftoolkit.cache.targetMaxSizeMB` | 500 | Target size of the `PDFToolkitCache` transient store holding the thumbnails and the previews. The dialog asks for 256px thumbnails, so a 1000 pages PDF occupies roughly 10 to 15 MB. |
 | `nuxeo.pdftoolkit.cache.absoluteMaxSizeMB` | 600 | Hard size limit of the same store. A full cache never fails a request, it only disables caching. |
+| `nuxeo.pdftoolkit.verboseRendering` | `false` | Log every chunk rendering at `warn` instead of `info`. Useful because the plugin package is not covered by the stock `log4j2.xml`, so its `info` messages are invisible by default. See "Checking the chunking". |
 | `nuxeo.transientstore.rendition.cache.ttl` | 240 | First level TTL, in minutes, shared with the rendition cache. |
+
+All these have defaults, so the plugin handles a 1000 pages PDF out of the box, with no `nuxeo.conf` entry.
 
 <br />
 

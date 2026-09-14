@@ -26,12 +26,25 @@ import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.Logger;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Configurator;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Before;
@@ -60,6 +73,8 @@ import org.nuxeo.runtime.test.runner.Deploy;
 import org.nuxeo.runtime.test.runner.Features;
 import org.nuxeo.runtime.test.runner.FeaturesRunner;
 import org.nuxeo.runtime.test.runner.TransactionalFeature;
+import org.nuxeo.runtime.test.runner.WithFrameworkProperty;
+import org.nuxeo.runtime.transaction.TransactionHelper;
 
 import jakarta.inject.Inject;
 import nuxeo.labs.pdf.toolkit.PDFToImages;
@@ -303,13 +318,16 @@ public class TestTheToolkit {
     }
 
     @Test
-    public void shouldRenderWholeDocumentWhenSingleThumbnailMissesTheCache() throws Exception {
+    public void shouldRenderTheChunkWhenSingleThumbnailMissesTheCache() throws Exception {
 
         Blob b = createTestDocBlob();
         assertTrue(cacheKeys().isEmpty());
 
-        // No cache at all: getThumbnail must render everything once, not just the asked page,
-        // otherwise serving N pages would reopen and reparse the PDF N times.
+        /*
+         * No cache at all: getThumbnail must render the whole chunk holding the page, not just that
+         * page, otherwise serving N pages would reopen and reparse the PDF N times. The test PDF is
+         * shorter than the default chunk size, so one chunk covers it entirely.
+         */
         Blob thumbnail = new PDFToImages(b).getThumbnail(7);
         assertNotNull(thumbnail);
 
@@ -435,5 +453,454 @@ public class TestTheToolkit {
 
         // And the server did render the new content, not reuse the old cache entry
         assertEquals(2, cacheKeys().size());
+    }
+
+    // ========================================
+    // Chunked rendering
+    //
+    // The test PDF has 10 pages, well below the default chunk size of 50, so the chunk size is lowered
+    // per test rather than introducing a second, bigger fixture.
+    // ========================================
+
+    /** Counts how many times the PDF is actually opened and rendered. */
+    protected static final AtomicInteger RENDER_COUNT = new AtomicInteger();
+
+    static class CountingPDFToImages extends PDFToImages {
+
+        CountingPDFToImages(Blob b) {
+            super(b);
+        }
+
+        @Override
+        protected ThumbnailsChunk renderChunk(TransientStore store, String cacheKey, int chunkStart, int chunkSize,
+                String reason) {
+            RENDER_COUNT.incrementAndGet();
+            return super.renderChunk(store, cacheKey, chunkStart, chunkSize, reason);
+        }
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldRenderOnlyTheRequestedChunk() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        PDFToImages.ThumbnailsChunk chunk = new PDFToImages(b).prepareChunk(1);
+
+        // The chunk is bounded, but the page count of the whole document is known
+        assertEquals(3, chunk.thumbnails().size());
+        assertEquals(1, chunk.chunkStart());
+        assertEquals(3, chunk.chunkEnd());
+        assertEquals(3, chunk.chunkSize());
+        assertEquals(TEST_PDF_PAGE_COUNT, chunk.pageCount());
+
+        // Only one chunk was rendered, so only one cache entry exists
+        assertEquals(1, cacheKeys().size());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldSnapAnyPageToItsChunk() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        // Pages 4, 5 and 6 all belong to the chunk starting at 4
+        for (int pageNum : new int[] { 4, 5, 6 }) {
+            PDFToImages.ThumbnailsChunk chunk = new PDFToImages(b).prepareChunk(pageNum);
+            assertEquals("Page " + pageNum, 4, chunk.chunkStart());
+            assertEquals("Page " + pageNum, 6, chunk.chunkEnd());
+        }
+
+        assertEquals("The three pages share one chunk, hence one cache entry", 1, cacheKeys().size());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldRenderALastPartialChunk() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        // 10 pages with a chunk size of 3: the last chunk starts at 10 and holds a single page
+        PDFToImages.ThumbnailsChunk chunk = new PDFToImages(b).prepareChunk(10);
+        assertEquals(10, chunk.chunkStart());
+        assertEquals(10, chunk.chunkEnd());
+        assertEquals(1, chunk.thumbnails().size());
+        assertEquals(TEST_PDF_PAGE_COUNT, chunk.pageCount());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldRejectAChunkBeyondTheDocument() throws Exception {
+
+        try {
+            new PDFToImages(createTestDocBlob()).prepareChunk(100);
+            fail("Should have rejected a chunk starting past the end of the document");
+        } catch (IllegalArgumentException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains("exceeds document page count"));
+        }
+    }
+
+    /**
+     * The point of the whole design: serving every page of a document costs one PDF opening per chunk,
+     * never one per page. On a remote blob store, one opening per page means one full download per page.
+     */
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldOpenThePdfOncePerChunkNotOncePerPage() throws Exception {
+
+        Blob b = createTestDocBlob();
+        RENDER_COUNT.set(0);
+
+        for (int pageNum = 1; pageNum <= TEST_PDF_PAGE_COUNT; pageNum++) {
+            assertNotNull(new CountingPDFToImages(b).getThumbnail(pageNum));
+        }
+
+        // ceil(10 / 3) == 4
+        assertEquals("One rendering per chunk", 4, RENDER_COUNT.get());
+        assertEquals(4, cacheKeys().size());
+    }
+
+    /**
+     * A browser opens up to six connections to the same host, so six thumbnails of the same cold chunk
+     * can reach six threads at once. Without the render lock, each of them would render the very same
+     * pages.
+     */
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldRenderAChunkOnlyOnceUnderConcurrency() throws Exception {
+
+        Blob b = createTestDocBlob();
+        RENDER_COUNT.set(0);
+
+        int threads = 6;
+        CyclicBarrier startTogether = new CyclicBarrier(threads);
+        CountDownLatch done = new CountDownLatch(threads);
+        List<Throwable> failures = Collections.synchronizedList(new ArrayList<>());
+
+        for (int i = 0; i < threads; i++) {
+            // Pages 1, 2 and 3 are all in the very same chunk
+            int pageNum = (i % 3) + 1;
+            new Thread(() -> {
+                try {
+                    startTogether.await(30, TimeUnit.SECONDS);
+                    TransactionHelper.runInTransaction(() -> {
+                        assertNotNull(new CountingPDFToImages(b).getThumbnail(pageNum));
+                    });
+                } catch (Exception | AssertionError e) {
+                    failures.add(e);
+                } finally {
+                    done.countDown();
+                }
+            }).start();
+        }
+
+        assertTrue("Threads did not finish in time", done.await(60, TimeUnit.SECONDS));
+        assertTrue("Concurrent access failed: " + failures, failures.isEmpty());
+
+        assertEquals("The render lock must let a single thread render the chunk", 1, RENDER_COUNT.get());
+        assertEquals(1, cacheKeys().size());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldStoreTheWholeDocumentAsChunks() throws Exception {
+
+        Blob b = createTestDocBlob();
+        RENDER_COUNT.set(0);
+
+        // GetThumbnails still renders everything, but in a single PDF opening
+        BlobList all = new CountingPDFToImages(b).createThumbnails();
+        assertEquals(TEST_PDF_PAGE_COUNT, all.size());
+        assertEquals("The full rendering must not go through renderChunk", 0, RENDER_COUNT.get());
+
+        // Stored as chunks, so the endpoint reads the very same entries
+        assertEquals(4, cacheKeys().size());
+
+        // And a single page is then served without any rendering at all
+        assertNotNull(new CountingPDFToImages(b).getThumbnail(8));
+        assertEquals(0, RENDER_COUNT.get());
+        assertEquals(4, cacheKeys().size());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldRebuildTheFullListFromTheChunkCache() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        assertEquals(TEST_PDF_PAGE_COUNT, new PDFToImages(b).createThumbnails().size());
+        assertEquals(4, cacheKeys().size());
+
+        // Second call is served from the per-chunk entries, in the right order and without re-rendering
+        BlobList again = new PDFToImages(b).createThumbnails();
+        assertEquals(TEST_PDF_PAGE_COUNT, again.size());
+        assertEquals(4, cacheKeys().size());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldRerenderWhenAChunkExpired() throws Exception {
+
+        Blob b = createTestDocBlob();
+        assertEquals(TEST_PDF_PAGE_COUNT, new PDFToImages(b).createThumbnails().size());
+
+        // Drop the chunk holding pages 4 to 6, the way a TTL would
+        store.remove(new PDFToImages(b).getChunkCacheKey(4));
+        assertEquals(3, cacheKeys().size());
+
+        // A partial set of chunks must not be served as a complete document
+        assertEquals(TEST_PDF_PAGE_COUNT, new PDFToImages(b).createThumbnails().size());
+        assertEquals(4, cacheKeys().size());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldKeepChunksOfDifferentSizesApart() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        new PDFToImages(b).prepareChunk(1);
+        new PDFToImages(b).prepareChunk(4);
+        assertEquals(2, cacheKeys().size());
+
+        // Same chunks, other rendering parameters: different entries
+        PDFToImages small = new PDFToImages(b);
+        small.setSize(120, 120);
+        small.prepareChunk(1);
+        assertEquals(3, cacheKeys().size());
+    }
+
+    // ========================================
+    // PDFLabs.PrepareThumbnails, chunked
+    // ========================================
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldReturnEveryUrlButRenderOneChunkOnly() throws Exception {
+
+        DocumentModel doc = createTestDoc();
+
+        JSONObject json = prepareThumbnails(doc);
+
+        // Every page gets an URL, so the caller can lay out its placeholders...
+        assertEquals(TEST_PDF_PAGE_COUNT, json.getInt("pageCount"));
+        assertEquals(TEST_PDF_PAGE_COUNT, json.getJSONArray("urls").length());
+
+        // ...but only the first chunk was rendered
+        assertEquals(3, json.getInt("chunkSize"));
+        assertEquals(1, json.getInt("chunkStart"));
+        assertEquals(3, json.getInt("chunkEnd"));
+        assertEquals(1, cacheKeys().size());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldPrepareAnotherChunkOnDemand() throws Exception {
+
+        DocumentModel doc = createTestDoc();
+
+        OperationContext ctx = new OperationContext(session);
+        ctx.setInput(doc);
+        Map<String, Object> params = new HashMap<>();
+        params.put("startPage", 8);
+        Blob result = (Blob) automationService.run(ctx, PDFPrepareThumbnailsOp.ID, params);
+
+        JSONObject json = new JSONObject(result.getString());
+        assertEquals(7, json.getInt("chunkStart"));
+        assertEquals(9, json.getInt("chunkEnd"));
+        assertEquals(TEST_PDF_PAGE_COUNT, json.getInt("pageCount"));
+
+        // Scrolling straight to the end must not have rendered the chunks in between
+        assertEquals(1, cacheKeys().size());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.THUMBNAILS_MAX_PAGES_PROPERTY, value = "5")
+    public void shouldRefusePdfAboveTheUiPageLimit() throws Exception {
+
+        DocumentModel doc = createTestDoc();
+
+        try {
+            prepareThumbnails(doc);
+            fail("Should have refused a PDF above the UI page limit");
+        } catch (Exception e) {
+            // Automation wraps runtime exceptions, walk the cause chain
+            String message = "";
+            for (Throwable t = e; t != null; t = t.getCause()) {
+                message += t.getMessage() + " ";
+            }
+            assertTrue(message, message.contains("pages limit for the thumbnails UI"));
+            assertTrue("The message must name the property to raise", message.contains(
+                    PDFToImages.THUMBNAILS_MAX_PAGES_PROPERTY));
+        }
+    }
+
+    @Test
+    public void shouldNotLimitPrepareThumbnailsTo150PagesAnymore() throws Exception {
+
+        // The default UI limit is well above the legacy 150 pages one, which used to fail the operation
+        assertTrue(PDFToImages.getThumbnailsMaxPages() > PDFToImages.DEFAULT_MAX_PAGES);
+        assertEquals(PDFToImages.DEFAULT_THUMBNAILS_MAX_PAGES, PDFToImages.getThumbnailsMaxPages());
+    }
+
+    @Test
+    public void shouldFallBackOnDefaultsForBogusProperties() throws Exception {
+        // No property set at all: the plugin must work out of the box, demo servers have no nuxeo.conf entry
+        assertEquals(PDFToImages.DEFAULT_CHUNK_SIZE, PDFToImages.getChunkSize());
+        assertEquals(PDFToImages.DEFAULT_THUMBNAILS_MAX_PAGES, PDFToImages.getThumbnailsMaxPages());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "not-a-number")
+    public void shouldIgnoreANonNumericChunkSize() throws Exception {
+        assertEquals(PDFToImages.DEFAULT_CHUNK_SIZE, PDFToImages.getChunkSize());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldReportWhetherTheChunkWasRendered() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        // Cold: the PDF is opened and the chunk rendered
+        PDFToImages.ThumbnailsChunk cold = new PDFToImages(b).prepareChunk(1);
+        assertTrue("A cold chunk must be reported as rendered", cold.rendered());
+        assertTrue("A rendering takes a measurable time", cold.renderTimeMs() >= 0);
+
+        // Warm: served from the cache, so the PDF is not opened at all
+        PDFToImages.ThumbnailsChunk warm = new PDFToImages(b).prepareChunk(1);
+        assertFalse("A cached chunk must not be reported as rendered", warm.rendered());
+        assertEquals(0L, warm.renderTimeMs());
+        assertEquals(cold.pageCount(), warm.pageCount());
+    }
+
+    /**
+     * The diagnostics travel to the browser, which is how the chunking can be checked from the
+     * network tab without touching log4j2.xml.
+     */
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldExposeRenderingDiagnosticsInTheResponse() throws Exception {
+
+        DocumentModel doc = createTestDoc();
+
+        JSONObject first = prepareThumbnails(doc);
+        assertTrue("First call renders", first.getBoolean("rendered"));
+        assertTrue(first.has("renderTimeMs"));
+
+        JSONObject second = prepareThumbnails(doc);
+        assertFalse("Second call is a cache hit, no PDF opening", second.getBoolean("rendered"));
+        assertEquals(0, second.getInt("renderTimeMs"));
+    }
+
+    @Test
+    public void shouldNotBeVerboseByDefault() throws Exception {
+        // Renderings are logged at info, which a default Nuxeo log4j2.xml hides. Opt-in only.
+        assertFalse(PDFToImages.isVerboseRendering());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.VERBOSE_RENDERING_PROPERTY, value = "true")
+    public void shouldTurnVerboseRenderingOn() throws Exception {
+        assertTrue(PDFToImages.isVerboseRendering());
+    }
+
+    /**
+     * Capture the levels the plugin logs at, so that a rendering path logging on its own instead of
+     * going through logRendering() is caught.
+     */
+    protected List<LogEvent> captureRenderingLogs(Runnable action) {
+
+        List<LogEvent> events = Collections.synchronizedList(new ArrayList<>());
+        Logger pluginLogger = (Logger) LogManager.getLogger(PDFToImages.class);
+
+        AbstractAppender collector = new AbstractAppender("TestCollector", null, null, true, null) {
+            @Override
+            public void append(LogEvent event) {
+                if (event.getMessage().getFormattedMessage().startsWith("Rendered")) {
+                    events.add(event.toImmutable());
+                }
+            }
+        };
+        collector.start();
+
+        Level previous = pluginLogger.getLevel();
+        pluginLogger.addAppender(collector);
+        Configurator.setLevel(pluginLogger.getName(), Level.INFO);
+        try {
+            action.run();
+        } finally {
+            pluginLogger.removeAppender(collector);
+            collector.stop();
+            Configurator.setLevel(pluginLogger.getName(), previous);
+        }
+
+        return events;
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldLogChunkRenderingAtInfoByDefault() throws Exception {
+
+        Blob b = createTestDocBlob();
+        List<LogEvent> events = captureRenderingLogs(() -> new PDFToImages(b).prepareChunk(1));
+
+        assertEquals(1, events.size());
+        assertEquals(Level.INFO, events.get(0).getLevel());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    @WithFrameworkProperty(name = PDFToImages.VERBOSE_RENDERING_PROPERTY, value = "true")
+    public void shouldLogChunkRenderingAtWarnWhenVerbose() throws Exception {
+
+        Blob b = createTestDocBlob();
+        List<LogEvent> events = captureRenderingLogs(() -> new PDFToImages(b).prepareChunk(1));
+
+        assertEquals(1, events.size());
+        assertEquals(Level.WARN, events.get(0).getLevel());
+    }
+
+    /**
+     * createThumbnails() is the other path that opens the PDF. It used to log on its own, so turning
+     * verbose rendering on left it invisible — exactly when someone is counting PDF openings.
+     */
+    @Test
+    public void shouldLogFullDocumentRenderingAtInfoByDefault() throws Exception {
+
+        Blob b = createTestDocBlob();
+        List<LogEvent> events = captureRenderingLogs(() -> new PDFToImages(b).createThumbnails());
+
+        assertEquals(1, events.size());
+        assertEquals(Level.INFO, events.get(0).getLevel());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.VERBOSE_RENDERING_PROPERTY, value = "true")
+    public void shouldLogFullDocumentRenderingAtWarnWhenVerbose() throws Exception {
+
+        Blob b = createTestDocBlob();
+        List<LogEvent> events = captureRenderingLogs(() -> new PDFToImages(b).createThumbnails());
+
+        assertEquals("Every path that opens the PDF must honour verboseRendering", 1, events.size());
+        assertEquals(Level.WARN, events.get(0).getLevel());
+    }
+
+    /** An endpoint fallback is abnormal, so it is a warning whatever the verbosity setting. */
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")
+    public void shouldAlwaysLogEndpointFallbackAtWarn() throws Exception {
+
+        Blob b = createTestDocBlob();
+        List<LogEvent> events = captureRenderingLogs(() -> new PDFToImages(b).getThumbnail(5));
+
+        assertEquals(1, events.size());
+        assertEquals(Level.WARN, events.get(0).getLevel());
+        assertTrue(events.get(0).getMessage().getFormattedMessage().contains("endpoint-fallback"));
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "0")
+    public void shouldIgnoreAZeroChunkSize() throws Exception {
+        assertEquals(PDFToImages.DEFAULT_CHUNK_SIZE, PDFToImages.getChunkSize());
     }
 }

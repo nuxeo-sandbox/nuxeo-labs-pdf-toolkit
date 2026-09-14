@@ -26,6 +26,13 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         font-weight: 500;
       }
 
+      .dialog-header .page-count {
+        margin-left: 12px;
+        font-size: 14px;
+        font-weight: 400;
+        color: var(--nuxeo-text-default, #666);
+      }
+
       .dialog-content {
         flex: 1;
         overflow-y: auto;
@@ -111,6 +118,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
     <paper-dialog id="dialog" modal>
       <div class="dialog-header">
         [[document.title]]
+        <span class="page-count" hidden$="[[!_pageCount]]">[[i18n('pdftoolkit.label.pageCount', _pageCount)]]</span>
       </div>
 
       <div class="dialog-content">
@@ -126,8 +134,10 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
           id="thumbnails"
           sources="[[thumbnailSources]]"
           loading="[[loading]]"
+          debug="[[debug]]"
           has-selection="{{_hasSelection}}"
           has-reordered="{{_hasReordered}}"
+          on-chunk-needed="_onChunkNeeded"
           on-page-preview="_onPagePreview">
         </nuxeo-pdf-toolkit-thumbnails>
       </div>
@@ -196,6 +206,38 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
           value: function() { return []; }
         },
 
+        /*
+         * Rendering parameters asked of the server for the grid thumbnails. The CSS displays them at
+         * 120px, so 256px still covers a high density screen, and 72 dpi is enough to fill 256px on a
+         * portrait page. The defaults of the operations stay at 512 / 150 dpi for anyone calling them
+         * from Studio or a script: only this dialog asks for something lighter. Rendering cost grows
+         * with the square of the dpi, so this is where the time goes.
+         */
+        thumbnailWidth: {
+          type: Number,
+          value: 256
+        },
+
+        thumbnailHeight: {
+          type: Number,
+          value: 256
+        },
+
+        thumbnailDpi: {
+          type: Number,
+          value: 72
+        },
+
+        /*
+         * Trace the chunk loading in the browser console: visible pages, chunks requested, chunks
+         * applied and how many tiles each filled. Off by default, set the attribute to turn it on:
+         * <nuxeo-pdf-toolkit document="[[document]]" debug></nuxeo-pdf-toolkit>
+         */
+        debug: {
+          type: Boolean,
+          value: false
+        },
+
         loading: {
           type: Boolean,
           value: false
@@ -230,6 +272,43 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         _pendingRemove: {
           type: Object,
           value: null
+        },
+
+        // ==============================================
+        // Chunked thumbnails loading
+        // ==============================================
+        // Total number of pages of the PDF, known as soon as the first chunk came back
+        _pageCount: {
+          type: Number,
+          value: 0
+        },
+
+        // Chunk size the server applied, it owns that setting
+        _chunkSize: {
+          type: Number,
+          value: 0
+        },
+
+        // Chunk start -> true, for the chunks already rendered
+        _preparedChunks: {
+          type: Object,
+          value: function() { return {}; }
+        },
+
+        // Chunk start -> true, for the chunks queued or in flight
+        _pendingChunks: {
+          type: Object,
+          value: function() { return {}; }
+        },
+
+        _chunkQueue: {
+          type: Array,
+          value: function() { return []; }
+        },
+
+        _chunkLoading: {
+          type: Boolean,
+          value: false
         }
 
       },
@@ -247,9 +326,25 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
 
       _documentChanged: function() {
         this.set('thumbnailSources', []);
+        this._resetChunkState();
         if (this.$.thumbnails) {
           this.$.thumbnails.reset();
         }
+      },
+
+      // Message of the overlay shown while an operation runs. The template has always called it, but
+      // it was never defined, so the overlay showed an empty line.
+      _getRunningOperationMessage: function() {
+        return this.i18n('pdftoolkit.label.processing');
+      },
+
+      _resetChunkState: function() {        this.set('_pageCount', 0);
+        this.set('_chunkSize', 0);
+        this._preparedChunks = {};
+        this._pendingChunks = {};
+        this._chunkQueue = [];
+        this._chunkLoading = false;
+        this._chunkErrorNotified = false;
       },
 
       _openDialog: function() {
@@ -486,31 +581,193 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       // ==============================================
       // Helpers
       // ==============================================
+      /**
+       * Open the dialog on the first chunk of pages.
+       *
+       * Only that chunk is rendered server side, but the operation returns the URL of every page, so
+       * the grid is laid out at its final size immediately. The remaining chunks are asked for as the
+       * user scrolls, see _onChunkNeeded.
+       */
       _loadThumbnails: function() {
         this.set('loading', true);
+        this.set('thumbnailSources', []);
+        this._resetChunkState();
+
+        this._requestChunk(1);
+      },
+
+      /**
+       * Fired by the thumbnails element with the original page numbers currently on screen.
+       */
+      _onChunkNeeded: function(e) {
+        var pages = (e.detail && e.detail.pages) || [];
+        if (!pages.length || !this._chunkSize) {
+          return;
+        }
+
+        // Several pages of the same chunk collapse into a single request
+        var wanted = {};
+        pages.forEach(function(pageNum) {
+          wanted[this._chunkStartFor(pageNum)] = true;
+        }.bind(this));
+
+        Object.keys(wanted).forEach(function(chunkStart) {
+          this._requestChunk(parseInt(chunkStart, 10));
+        }.bind(this));
+      },
+
+      _chunkStartFor: function(pageNum) {
+        var size = this._chunkSize || 1;
+        return Math.floor((pageNum - 1) / size) * size + 1;
+      },
+
+      /**
+       * Queue a chunk for rendering, unless it is already rendered or already on its way.
+       */
+      _requestChunk: function(chunkStart) {
+        if (this._preparedChunks[chunkStart] || this._pendingChunks[chunkStart]) {
+          if (this.debug) {
+            console.log('[pdf-toolkit] chunk ' + chunkStart + ' skipped ('
+              + (this._preparedChunks[chunkStart] ? 'already prepared' : 'already pending') + ')');
+          }
+          return;
+        }
+        this._pendingChunks[chunkStart] = true;
+        this._chunkQueue.push(chunkStart);
+        if (this.debug) {
+          console.log('[pdf-toolkit] chunk ' + chunkStart + ' queued (queue=' + this._chunkQueue.length + ')');
+        }
+        this._drainChunkQueue();
+      },
+
+      /**
+       * One chunk at a time: <nuxeo-operation> is a single shared element, so two overlapping calls
+       * would fight over its params. Serializing also keeps a fast scroll from flooding the server.
+       */
+      _drainChunkQueue: function() {
+        if (this._chunkLoading || !this._chunkQueue.length) {
+          return;
+        }
+
+        var chunkStart = this._chunkQueue.shift();
+        this._chunkLoading = true;
 
         var op = this.$.prepareThumbnailsOp;
         op.input = this.document;
-        op.params = {}; // width / height / dpi could be passed here
+        op.params = {
+          startPage: chunkStart,
+          width: this.thumbnailWidth,
+          height: this.thumbnailHeight,
+          dpi: this.thumbnailDpi
+        };
+
         op.execute()
           .then(function(response) {
-            /*
-             * PDFLabs.PrepareThumbnails renders every page once, fills the server side cache and
-             * returns one URL per page. The images are then fetched by the browser, which can cache
-             * them: nothing is transported as base64 any more.
-             */
-            var baseUrl = this._getBaseUrl();
-            var sources = (response.urls || []).map(function(url) {
-              return baseUrl + url;
-            });
-            this.set('thumbnailSources', sources);
-            this.set('loading', false);
+            this._onChunkReady(chunkStart, response);
           }.bind(this))
           .catch(function(error) {
-            console.error('Failed to load thumbnails', error);
+            console.error('Failed to load thumbnails chunk starting at ' + chunkStart, error);
             this.set('loading', false);
-            this.fire('notify', { message: this.i18n('pdftoolkit.error.thumbnailsFailed') });
+            this._notifyChunkError(error);
+          }.bind(this))
+          .then(function() {
+            delete this._pendingChunks[chunkStart];
+            this._chunkLoading = false;
+            this._drainChunkQueue();
           }.bind(this));
+      },
+
+      /**
+       * A failing chunk leaves its tiles on the placeholder, which is already a visible symptom. Only
+       * tell the user once, otherwise a broken server turns a scroll into a flood of toasts.
+       */
+      _notifyChunkError: function(error) {
+        if (this._chunkErrorNotified) {
+          return;
+        }
+        this._chunkErrorNotified = true;
+
+        // The server names the property to raise, which is how we recognize the page limit
+        var text = '';
+        try {
+          text = JSON.stringify(error) + ' ' + ((error && error.message) || '');
+        } catch (e) {
+          text = (error && error.message) || '';
+        }
+
+        var key = text.indexOf('thumbnails UI') > -1 || text.indexOf('thumbnails.maxPages') > -1
+          ? 'pdftoolkit.error.tooManyPages'
+          : 'pdftoolkit.error.thumbnailsFailed';
+
+        this.fire('notify', { message: this.i18n(key) });
+      },
+
+      _onChunkReady: function(chunkStart, response) {
+        var baseUrl = this._getBaseUrl();
+        var urls = (response.urls || []).map(function(url) {
+          return baseUrl + url;
+        });
+
+        if (this.debug) {
+          console.log('[pdf-toolkit] chunk ' + response.chunkStart + '-' + response.chunkEnd
+            + ' of ' + response.pageCount + ' ready, rendered=' + response.rendered
+            + ' in ' + response.renderTimeMs + 'ms');
+        }
+
+        // First chunk: it carries the page count, so this is where the grid is built
+        if (!this._pageCount) {
+          this.set('_pageCount', response.pageCount || urls.length);
+          this.set('_chunkSize', response.chunkSize || urls.length);
+
+          /*
+           * Every page gets a tile right away, even those whose image is not rendered yet. Selection
+           * and drag and drop then work across the whole document: shift-clicking from page 12 to
+           * page 900, or dragging a page to the very end, would be impossible with a grid that only
+           * holds the pages loaded so far.
+           */
+          var sources = new Array(this._pageCount);
+          for (var i = 0; i < this._pageCount; i++) {
+            sources[i] = '';
+          }
+          this._fillChunk(sources, response, urls);
+
+          this._markChunkPrepared(chunkStart, response.chunkStart);
+          this.set('thumbnailSources', sources);
+          this.set('loading', false);
+          return;
+        }
+
+        var applied = this.$.thumbnails.applyChunk(response.chunkStart, response.chunkEnd, urls);
+
+        /*
+         * Only remember the chunk as done when it actually filled tiles. Marking it unconditionally
+         * made a chunk that landed on nothing permanently unrequestable: the pages stayed empty and
+         * coming back to them never triggered a new call.
+         */
+        if (applied > 0) {
+          this._markChunkPrepared(chunkStart, response.chunkStart);
+        } else if (this.debug) {
+          console.warn('[pdf-toolkit] chunk ' + response.chunkStart + ' filled no tile, left requestable');
+        }
+      },
+
+      /**
+       * The server snaps the requested page to the start of its chunk, so what came back may not be
+       * what we asked for. Remember both, otherwise the chunk could be requested again forever.
+       */
+      _markChunkPrepared: function(requestedStart, serverStart) {
+        this._preparedChunks[requestedStart] = true;
+        if (serverStart) {
+          this._preparedChunks[serverStart] = true;
+        }
+      },
+
+      _fillChunk: function(sources, response, urls) {
+        for (var pageNum = response.chunkStart; pageNum <= response.chunkEnd; pageNum++) {
+          if (urls[pageNum - 1]) {
+            sources[pageNum - 1] = urls[pageNum - 1];
+          }
+        }
       },
 
       // The operation returns URLs relative to the Nuxeo application root

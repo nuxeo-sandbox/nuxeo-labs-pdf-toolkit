@@ -1,9 +1,12 @@
 # AGENTS.md — nuxeo-labs-pdf-toolkit
 
 Nuxeo plugin (LTS 2025). Adds a "PDF Toolkit" Web UI dialog (thumbnails, page selection,
-reorder) backed by 5 Automation operations. See `README.md` for the functional spec and the
-full operation/parameter reference — it is accurate and worth reading before touching an
-operation signature.
+reorder) backed by 6 Automation operations and one REST endpoint. See `README.md` for the
+functional spec and the full operation/parameter reference — it is accurate and worth reading
+before touching an operation signature.
+
+`AGENTS.md` is deliberately **not** in `.gitignore` here: it ships with the repo. Never put a
+local path, a credential or any PII in it.
 
 ## Branches
 
@@ -21,17 +24,19 @@ mvn -pl nuxeo-labs-pdf-toolkit-core test -Dtest=TestOperationsDestinations#shoul
 
 - Java 21 (`<release>21</release>` from `nuxeo-parent:2025.0`).
 - Requires network access to `packages.nuxeo.com` (maven-public **and** maven-private) and
-  `connect.nuxeo.com`.
+  `connect.nuxeo.com`. A cold `mvn clean install` also pulls the `nuxeo-nxr-server` zip for the
+  `-package` module, which is large — prefer the `-pl ...-core` loop while iterating.
 - No CI, no formatter config, no lint step. `mvn clean install` is the whole gate.
-- 56 tests across 4 classes, all green, ~45 s. A failure is a real regression, not flakiness.
+- 85 tests across 4 classes, all green, ~65 s. A failure is a real regression, not flakiness.
 - `target/` may hold stale artifacts from an old `lts2023` build — never trust it without a
-  `clean`.
+  `clean`. `nuxeo-labs-pdf-toolkit-core/bin/` is stale Eclipse output from before the
+  `nuxeo.labs.pdf.tools` → `nuxeo.labs.pdf.toolkit` rename; it is gitignored, ignore it.
 
 ## Modules
 
 | Module | What it is |
 |---|---|
-| `-core` | All Java: PDF logic + 5 operations. The only module with tests. |
+| `-core` | All Java: PDF logic + 6 operations + the REST endpoint. The only module with tests. |
 | `-webui` | Resources only (Polymer 2 HTML + i18n). No Java, no dependencies, no JS build/lint. |
 | `-package` | Marketplace zip, assembled by `src/main/assemble/assembly.xml` (ant-assembly-maven-plugin). Rarely needs edits. |
 
@@ -47,6 +52,9 @@ mvn -pl nuxeo-labs-pdf-toolkit-core test -Dtest=TestOperationsDestinations#shoul
   `PDFTools.checkIsProcessablePdf(b)`. Never go back to a bare
   `(Blob) doc.getPropertyValue(xpath)`: it NPEs on a document with no file and
   ClassCastExceptions on a non-blob xpath.
+- `checkIsProcessablePdf` also caps the input at `PDFTools.MAX_PDF_SIZE` (200 MB): PDFBox loads
+  the document in memory. A blank mime type is accepted on purpose (some blobs have none, and
+  PDFBox rejects the content anyway); a non-`application/pdf` one is refused.
 - `PDFDestinationHandler` owns the shared `destinationJsonStr` contract
   (`download` / `derivative` / `attachments` / `newFile`), one protected method per
   destination. Any new mutating operation should delegate to it rather than re-implementing a
@@ -76,11 +84,6 @@ transport for the UI. `PDFLabs.GetThumbnails` is kept for blob inputs and script
   MANIFEST. No OSGi fragment, no extra module. Served at `/nuxeo/site/pdftoolkit/`.
 - **In tests the WebEngine servlet is mapped on `/*`**, so the very same route is at
   `<httpUrl>/pdftoolkit`, without `site/`. Do not "fix" one to match the other.
-- The two-phase split is the whole point and must be preserved: the operation opens, parses and
-  renders the PDF **once**, the endpoint only reads the cache. Making the endpoint render the
-  single page it was asked for would mean one `Loader.loadPDF()` **and one
-  `getCloseableFile()` per page** — that is one full download of the PDF per page on a remote
-  blob store. `PDFToImages.getThumbnail()` therefore renders the whole document on a cache miss.
 - **Never return a `Blob` as the JAX-RS entity if you set headers**: the platform `BlobWriter`
   starts with `httpHeaders.clear()` and delegates to the `DownloadService`, wiping the `ETag`,
   the `Cache-Control` and the content type. Stream `blob.getStream()` instead. This cost an hour
@@ -99,6 +102,42 @@ transport for the UI. `PDFLabs.GetThumbnails` is kept for blob inputs and script
   is enforced by the repository, not by us. Keep it that way.
 - Rendering parameters arrive in the query string, so they go through the same setters as the
   operation and are clamped identically. An URL is no more trustable than an operation param.
+
+### The chunk is the unit of work — never render a single page
+
+Everything about thumbnails is rendered by chunks of `nuxeo.pdftoolkit.thumbnails.chunkSize`
+pages (50 by default). This is what makes a 1000 pages PDF work at all; before it, the operation
+simply threw above 150 pages.
+
+- **Serving N pages must cost `ceil(N / chunkSize)` PDF openings, never N.** One opening per page
+  means one `getCloseableFile()` per page, that is one full download of the PDF per page on a
+  remote blob store. `shouldOpenThePdfOncePerChunkNotOncePerPage` guards this.
+- `prepareChunk(startPage)` is the only entry point that renders. `getThumbnail(pageNum)` goes
+  through it, so the endpoint's fallback renders the chunk, not the page and not the document.
+- **The render lock is not optional.** A browser opens up to six connections, so six thumbnails of
+  the same cold chunk land on six threads at once. `renderLockFor(cacheKey)` stripes 64 locks over
+  the key; the winner renders, the others re-check the cache after waiting. Striping rather than a
+  map of per-key locks: nothing to remove, hence no leak and no race on the removal.
+  `shouldRenderAChunkOnlyOnceUnderConcurrency` guards this.
+- **The page count is cached with every chunk** (`putParameter(PAGE_COUNT_PARAM)`). Without it,
+  answering "how many pages?" on a cache hit would reopen and reparse the PDF — on S3, download it
+  again. Any new cache write must keep writing it, and `readChunkFromCache` rejects an entry that
+  lacks it.
+- `createThumbnails()` (whole document, for `GetThumbnails`) still opens the PDF **once**, but
+  stores its result chunk by chunk so both paths share the same cache entries. Do not make it loop
+  over `prepareChunk`: that would reopen the PDF once per chunk.
+- Rendering cost grows with the **square of the dpi** and barely at all with the target size
+  (measured: 10 pages at 512px/150dpi ≈ 230 ms, at 120px/150dpi ≈ 200 ms, at 2000px/300dpi
+  ≈ 850 ms). If something is slow, look at the dpi, not the size.
+- **The plugin's `info` logs are invisible on a stock server.** The package is
+  `nuxeo.labs.pdf.toolkit`, which no `<Logger>` of Nuxeo's `log4j2.xml` covers, so it inherits the
+  root logger — at `warn`. Never rely on a `log.info` to prove anything to a user: the test
+  `log4j2-test.xml` sets the root to `info`, so it shows in surefire and nowhere else.
+- **Every path that opens the PDF logs through `logRendering(reason, ...)`**, never a direct
+  `log.info`. It is the single place deciding the level: `warn` for an endpoint fallback (abnormal)
+  or when `nuxeo.pdftoolkit.verboseRendering` is on, `info` otherwise. `createThumbnails()` used to
+  log on its own and stayed invisible when verbose rendering was turned on — the four
+  `shouldLog*Rendering*` tests capture the level with an in-memory appender and guard this.
 
 ### Temporary blobs — the only correct way
 
@@ -130,11 +169,12 @@ Consequences, all enforced by tests — keep them:
   request whose result is already computed.
 - The `finally` block calls `store.remove(key)` when nothing was stored, so a failed run never
   leaves a poisoned entry behind.
-- Cache keys are built by `buildCacheKey()` and **include the rendering parameters**
-  (`width`, `height`, `dpi` for thumbnails; page number and preview constants for previews).
-  Dropping them serves wrongly-sized images.
+- Cache keys are built by `buildCacheKey()` and **include the rendering parameters and the chunk
+  start** (`width`, `height`, `dpi`, `-c<chunkStart>` for thumbnails; page number and preview
+  constants for previews). Dropping them serves wrongly-sized images, or the wrong pages.
 - A blob with neither digest nor `ManagedBlob` key is **not cached** (`buildCacheKey` returns
-  `null`). Do not add a `filename + length` fallback: it can collide across documents.
+  `null`). Do not add a `filename + length` fallback: it can collide across documents. Note that
+  `prepareChunk` then also skips the render lock — there is nothing to share anyway.
 
 ### Rendering bounds — do not remove
 
@@ -147,18 +187,50 @@ All operations are reachable by any authenticated user, so `PDFToImages` clamps 
 | `DEFAULT_DPI` | 150 | Thumbnails are downscaled anyway; 512 rendered ~76 MB per A4 page. |
 | `MAX_DPI` | 300 | Above this a single page can exhaust the heap. |
 | `MAX_THUMBNAIL_SIZE` | 2000 | Same reason. |
-| `DEFAULT_MAX_PAGES` | 150 | The thumbnails operation builds the whole base64 payload in memory, ~230 KB of heap per page. Applies to thumbnails only, not to extract/remove/reorder. |
+| `DEFAULT_MAX_PAGES` | 150 | The thumbnails operation builds the whole base64 payload in memory, ~230 KB of heap per page. Applies to `GetThumbnails` only — **not** to `PrepareThumbnails`, which is bounded by the chunk, nor to extract/remove/reorder. |
+| `DEFAULT_THUMBNAILS_MAX_PAGES` | 2000 | Plafond of `PrepareThumbnails`. Not about the server (rendering is chunked) but about the browser: one tile per page, and a few thousand tiles freeze a tab. |
+| `PDFTools.MAX_PDF_SIZE` | 200 MB | PDFBox loads the document in memory. Checked in `checkIsProcessablePdf`. |
 | `PREVIEW_DPI` / `PREVIEW_PAGE_MAX_SIZE` | 300 / 2048 | Preview is rendered then resized by the `pictureResize` converter. Cache and return the **resized** blob, not the full-size one. Raise the cap, never the DPI: the 300 dpi render already holds more detail than the cap keeps, so the cap is free while the DPI costs quadratically. |
 
 ## Configuration properties
 
-| Property | Default |
-|---|---|
-| `nuxeo.pdftoolkit.maxPages` | 150 |
-| `nuxeo.pdftoolkit.cache.targetMaxSizeMB` | 500 |
-| `nuxeo.pdftoolkit.cache.absoluteMaxSizeMB` | 600 |
+| Property | Default | Scope |
+|---|---|---|
+| `nuxeo.pdftoolkit.thumbnails.chunkSize` | 50 | Pages rendered per PDF opening |
+| `nuxeo.pdftoolkit.thumbnails.maxPages` | 2000 | `PrepareThumbnails` page cap |
+| `nuxeo.pdftoolkit.maxPages` | 150 | `GetThumbnails` only (base64 payload) |
+| `nuxeo.pdftoolkit.cache.targetMaxSizeMB` | 500 | |
+| `nuxeo.pdftoolkit.cache.absoluteMaxSizeMB` | 600 | |
+| `nuxeo.pdftoolkit.verboseRendering` | false | Chunk renderings logged at `warn` |
 
-Documented in `README.md` too — update both.
+All read through `getPositiveIntProperty()`, which falls back on the constant when the property is
+missing, non-numeric or ≤ 0. **Everything works with no `nuxeo.conf` entry** — that matters, the
+plugin ships on presales demo instances.
+
+## Anything user-facing must reach `README.md`
+
+`README.md` is the contract with the user: configuration properties, operation parameters and
+response fields, and the public attributes of `<nuxeo-pdf-toolkit>`. Three sets that silently drift.
+
+**After adding a configuration property, an operation parameter, a response field or an element
+attribute, run these checks** — they caught `debug` and `thumbnailWidth/Height/Dpi` being shipped
+undocumented:
+
+```bash
+# 1. Config properties: the two lists must match
+rg -o '"nuxeo\.pdftoolkit\.[a-zA-Z.]+"' --type java nuxeo-labs-pdf-toolkit-core/src/main | sed 's/.*"\(.*\)"/\1/' | sort -u
+rg -o 'nuxeo\.pdftoolkit\.[a-zA-Z.]+' nuxeo-labs-pdf-toolkit-core/src/main/resources/OSGI-INF/cache-contrib.xml | sort -u
+rg -o 'nuxeo\.pdftoolkit\.[a-zA-Z.]+' README.md | sort -u
+
+# 2. Public attributes of the element: every one must appear in README
+rg -n '^        [a-z]\w*: \{' nuxeo-labs-pdf-toolkit-webui/src/main/resources/web/nuxeo.war/ui/nuxeo-pdf-toolkit/nuxeo-pdf-toolkit.html
+
+# 3. i18n keys: both files must hold the same set
+python3 -c "import json;a=set(json.load(open('nuxeo-labs-pdf-toolkit-webui/src/main/resources/web/nuxeo.war/ui/i18n/messages.json')));b=set(json.load(open('nuxeo-labs-pdf-toolkit-webui/src/main/resources/web/nuxeo.war/ui/i18n/messages-fr.json')));print('EN-only',a-b,'FR-only',b-a)"
+```
+
+A property documented in `AGENTS.md` but not in `README.md` is a bug: agents read the former, users
+read the latter.
 
 ## Tests
 
@@ -172,13 +244,16 @@ Documented in `README.md` too — update both.
   string — **do not replace or re-generate this file.**
 - Surefire picks up `Test*` class names; keep the prefix.
 - Who tests what:
-  - `TestOperationsWithDownload` — the 5 operations with the default `download` destination,
-    plus the negative tests on page ranges and page orders.
+  - `TestOperationsWithDownload` — every operation but `PrepareThumbnails`, with the default
+    `download` destination, plus the negative tests on page ranges and page orders.
   - `TestOperationsDestinations` — the 4 destinations, plus the negative tests on
     `destinationJsonStr`. Always assert `checkOriginalNotModified()` when the operation is not
     supposed to touch the source.
-  - `TestTheToolkit` — caching, rendering bounds, blob validation, single page thumbnail and
-    `PDFLabs.PrepareThumbnails`, and the content token in the generated URLs.
+  - `TestTheToolkit` — caching, chunking, the render lock, rendering bounds, blob validation,
+    single page thumbnail and `PDFLabs.PrepareThumbnails`, and the content token in the generated
+    URLs. Chunk tests lower the chunk size to 3 with
+    `@WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")` rather than
+    introducing a second, bigger PDF fixture.
   - `TestPDFToolkitEndpoint` — the REST endpoint over HTTP, under `WebEngineFeature` (not
     `AutomationFeature`: the two do not mix well in one class) with `HttpClientTestRule`.
 - `TestTheToolkit` wipes the store in `@Before` via `((TransientStoreProvider) store).removeAll()`.
@@ -225,7 +300,43 @@ Polymer 2 / Web UI legacy elements under
     `paper-dialog` in `nuxeo-pdf-toolkit.html`;
   - `Nuxeo.LayoutBehavior` is `[RoutingBehavior, FiltersBehavior, FormatBehavior]`, so there is
     no `this.notify()`. Use `this.fire('notify', { message: ... })`.
-- `GetThumbnails` returns base64 **JPEG**: the data URL prefix is `data:image/jpeg;base64,`.
+- Nothing is transported as base64 any more: `_loadThumbnails()` calls `PDFLabs.PrepareThumbnails`
+  and the `<img>` tags fetch the URLs it returns. Those URLs are **relative to the Nuxeo
+  application root**, so `_getBaseUrl()` prefixes them with `this.$.nx.url` — do not drop that,
+  and do not assume `/nuxeo/` (the context path is configurable).
+- **Chunked loading, and the traps it brings.** The orchestrator asks for one chunk, gets the URLs
+  of *every* page, and builds a tile per page immediately — including pages with no image yet.
+  That is what keeps shift-click over a wide range and dragging a page to the far end working on a
+  1000 pages document. Five rules, each of which cost a bug:
+  - `_visiblePageNumbers()` finds the visible tiles by **binary search on their position**, never by
+    computing them from a measured grid (columns x row height). The computed version silently
+    yielded an *empty* range at some scroll positions — tiles that never loaded, no error anywhere.
+    Measure, do not deduce. ~10 probes locate the first visible tile among a thousand.
+  - Tiles are read through **`data-index`**, never through their rank in the `querySelectorAll`
+    result: the two are not guaranteed to match, which is why the drag handlers already did so.
+  - `applyChunk()` matches tiles on **`originalPageNumber`, never on position** (after a reorder the
+    two diverge) and **returns how many tiles it filled**. The orchestrator marks a chunk prepared
+    only when that count is > 0 — marking unconditionally made a chunk that landed on nothing
+    permanently unrequestable, so those pages stayed empty forever.
+  - Chunk requests are **suspended while `_draggedIndex >= 0`**: applying images mutates a bound
+    property, which re-renders the `dom-repeat` and aborts the gesture. `_onDragEnd` re-scans, and
+    so does `applyChunk` (the viewport may span several chunks) and a window resize.
+  - `<nuxeo-operation>` is a single shared element, so chunk calls are **serialized through
+    `_chunkQueue`**; two overlapping calls would fight over `op.params`.
+  - A tile with no image yet shows a transparent-pixel data URL, **never `src=""`**: an empty src
+    makes some browsers refetch the current page.
+- `debug` attribute on `<nuxeo-pdf-toolkit>` traces the whole chain in the console (visible pages,
+  chunk queued/skipped/applied, tiles filled). There is no UI test harness, so this is the only
+  diagnostic available — keep it working.
+- `.page-thumbnail` has a **fixed 120x170 box with `object-fit: contain`**. Without a reserved
+  size, each incoming image reflows the grid and the browser — seeing a compact grid — schedules
+  far more fetches than the viewport needs.
+- `_visibleIndices()` measures the grid on the **first few tiles** then computes the visible range
+  from the scroll offset. Calling `getBoundingClientRect()` on every tile would be a thousand
+  forced reflows per scroll event.
+- The dialog asks for **256px @ 72 dpi** (`thumbnailWidth/Height/Dpi`), not the operation defaults
+  of 512 @ 150: ~4x faster to render and 4x smaller in cache, and the CSS displays at 120px
+  anyway. Do not change the *operation* defaults to match — Studio and scripts depend on them.
 - In `-actions.html`, selection highlighting relies on `this.root.querySelectorAll('.destination-option')`.
   Do not wrap those options in a `<nuxeo-filter>`: the templatizer moves them out of that query's
   scope. Use `hidden$=` instead.
@@ -242,10 +353,10 @@ Polymer 2 / Web UI legacy elements under
   trailing newline at EOF (last header is dropped otherwise).
 - `Bundle-Version` is hardcoded in both MANIFESTs and **must be bumped by hand at each release**,
   to the release version without the `-SNAPSHOT` suffix (`mvn versions:set` does not touch
-  manifests). It cannot be filtered from `${project.version}`: `2025.6.0-SNAPSHOT` is not a valid
+  manifests). It cannot be filtered from `${project.version}`: `2025.7.0-SNAPSHOT` is not a valid
   OSGi version (the dash is illegal).
 - `Bundle-SymbolicName` follows `groupId.artifactId` in both modules. The core one is
-  referenced by `@Deploy(...)` in the 3 test classes — renaming it breaks them.
+  referenced by `@Deploy(...)` in the 4 test classes — renaming it breaks them.
 - Java: 4 spaces, K&R, ~120 cols, no wildcard imports, `jakarta.*` not `javax.*`
   (`javax.imageio` is the legitimate exception), Log4j2 `LogManager.getLogger()`,
   `Framework.getService()` for lookups, checked exceptions wrapped in `NuxeoException`,

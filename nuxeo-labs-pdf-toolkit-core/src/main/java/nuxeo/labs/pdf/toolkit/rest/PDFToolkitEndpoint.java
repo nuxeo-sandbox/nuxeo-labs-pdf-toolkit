@@ -51,9 +51,10 @@ import nuxeo.labs.pdf.toolkit.PDFToImages;
  * Deployed as a WebEngine module (see the {@code Nuxeo-WebModule} header in the MANIFEST), so the
  * endpoint lives under {@code /nuxeo/site/pdftoolkit/}.
  * <p>
- * This endpoint only ever <b>reads</b> the thumbnails cache: the PDF is opened, parsed and rendered
- * once by the operation, not once per page. See {@link PDFToImages#getThumbnail(int)} for what
- * happens when the cache entry vanished in between.
+ * This endpoint only ever <b>reads</b> the thumbnails cache on the nominal path: the PDF is opened,
+ * parsed and rendered once per chunk by the operation, not once per page. See
+ * {@link PDFToImages#getThumbnail(int)} for what happens when the cache entry vanished in between — it
+ * renders the whole chunk holding the page, never that single page.
  *
  * @since 2025.6
  */
@@ -118,7 +119,8 @@ public class PDFToolkitEndpoint extends ModuleRoot {
         boolean versionedUrl = contentToken != null && !contentToken.isBlank();
 
         // A blob with no digest is not cacheable, hence no ETag either.
-        String cacheKey = pdfToImages.getThumbnailsCacheKey();
+        int chunkStart = PDFToImages.chunkStartFor(pageNum, PDFToImages.getChunkSize());
+        String cacheKey = pdfToImages.getChunkCacheKey(chunkStart);
         EntityTag etag = cacheKey == null ? null : new EntityTag(cacheKey + "-" + pageNum);
 
         if (etag != null) {

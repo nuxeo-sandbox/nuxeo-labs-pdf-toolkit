@@ -3,6 +3,8 @@
   "pdftoolkit.label.remove": "Remove",
   "pdftoolkit.label.reorg": "Reorganize",
   "pdftoolkit.label.close": "Close",
+  "pdftoolkit.label.pageCount": "{0} pages",
+  "pdftoolkit.label.processing": "Processing…",
   "pdftoolkit.label.cancel": "Cancel",
   "pdftoolkit.label.ok": "OK",
   "pdftoolkit.dialog.extract.title": "Extract Pages - Choose Destination",
@@ -28,5 +30,6 @@
   "pdftoolkit.error.noPagesSelected": "No pages selected. Please select at least one page to proceed.",
   "pdftoolkit.error.actionFailed": "The action could not be completed. Please try again later.",
   "pdftoolkit.error.thumbnailsFailed": "The page thumbnails could not be loaded.",
-  "pdftoolkit.error.previewFailed": "The page preview could not be loaded."
+  "pdftoolkit.error.previewFailed": "The page preview could not be loaded.",
+  "pdftoolkit.error.tooManyPages": "This PDF has too many pages to be displayed."
 }
