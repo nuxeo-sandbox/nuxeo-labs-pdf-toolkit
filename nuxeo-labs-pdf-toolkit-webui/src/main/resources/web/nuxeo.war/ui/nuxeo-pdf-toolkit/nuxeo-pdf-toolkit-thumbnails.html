@@ -324,7 +324,10 @@ Actions are taken by the parent via events.
         },
 
         /**
-         * Return selected pages as a range string, e.g. "1,3-5".
+         * Return the selected pages as a range string over the ORIGINAL page numbers, e.g. "1,3-5".
+         *
+         * The operations run on the source PDF, which is never reordered, so this is the only
+         * numbering that means anything to them. See _getSelectedPageRanges().
          */
         getSelectedPageRanges: function() {
           return this._getSelectedPageRanges();
@@ -658,35 +661,48 @@ Actions are taken by the parent via events.
           });
         },
 
+        /**
+         * Fold the selected pages into a print-style range string, over their ORIGINAL page numbers.
+         *
+         * Never build this from the position in the grid. Extract and Remove run on the source PDF,
+         * which a drag and drop does NOT reorder: after moving page 5 to the front, position 1 holds
+         * original page 5, and sending "1" would extract — or delete — original page 1 instead. The
+         * tiles show "position (original)" precisely because the original number is the one the
+         * server understands.
+         *
+         * Sorting is required: originalPageNumber is in document order only until the first drag.
+         */
         _getSelectedPageRanges: function() {
-          var selectedIndices = [];
-          this.pages.forEach(function(page, index) {
+          var pages = [];
+          this.pages.forEach(function(page) {
             if (page.selected) {
-              selectedIndices.push(index + 1);
+              pages.push(page.originalPageNumber);
             }
           });
 
-          if (!selectedIndices.length) {
+          if (!pages.length) {
             return '';
           }
 
-          var ranges = [];
-          var start = selectedIndices[0];
-          var prev = selectedIndices[0];
+          pages.sort(function(a, b) { return a - b; });
 
-          for (var i = 1; i <= selectedIndices.length; i++) {
-            if (i === selectedIndices.length || selectedIndices[i] !== prev + 1) {
+          var ranges = [];
+          var start = pages[0];
+          var prev = pages[0];
+
+          for (var i = 1; i <= pages.length; i++) {
+            if (i === pages.length || pages[i] !== prev + 1) {
               if (start === prev) {
                 ranges.push(start.toString());
               } else {
                 ranges.push(start + '-' + prev);
               }
-              if (i < selectedIndices.length) {
-                start = selectedIndices[i];
-                prev = selectedIndices[i];
+              if (i < pages.length) {
+                start = pages[i];
+                prev = pages[i];
               }
             } else {
-              prev = selectedIndices[i];
+              prev = pages[i];
             }
           }
 

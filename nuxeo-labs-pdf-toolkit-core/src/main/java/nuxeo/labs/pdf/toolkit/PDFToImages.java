@@ -36,6 +36,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
 import org.apache.pdfbox.pdmodel.encryption.InvalidPasswordException;
 import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
@@ -59,9 +60,14 @@ import org.nuxeo.runtime.api.Framework;
 /**
  * Extract thumbnails or previews.
  * <p>
- * Rendering is bounded on purpose: see {@link #MAX_DPI}, {@link #MAX_THUMBNAIL_SIZE} and
- * {@link #DEFAULT_MAX_PAGES}. All the operations are exposed to any authenticated user, so unbounded
- * rendering parameters would be a trivial denial of service.
+ * Rendering is bounded on purpose: see {@link #MAX_DPI}, {@link #MAX_THUMBNAIL_SIZE},
+ * {@link #DEFAULT_MAX_PAGES} and {@link #MAX_RENDERED_PIXELS}. All the operations are exposed to any
+ * authenticated user, so unbounded rendering parameters would be a trivial denial of service.
+ * <p>
+ * The dpi and the requested size are not the only attacker-controlled inputs: the <b>page geometry
+ * is one too</b>, and it is the one that actually drives the allocation. Every rendering therefore
+ * goes through {@link #renderPage}, never through {@code PDFRenderer.renderImageWithDPI} — read its
+ * Javadoc before touching any rendering code.
  *
  * @since 2025.2
  */
@@ -98,6 +104,29 @@ public class PDFToImages {
      * @since 2025.6
      */
     public static final int MAX_THUMBNAIL_SIZE = 2000;
+
+    /**
+     * How many pixels are rendered per pixel actually kept, on the longest side.
+     * <p>
+     * Rendering straight at the target size makes text thin and aliased, which is why the original
+     * code rendered at a fixed dpi and downsampled. Rendering at twice the target and letting
+     * {@link #scaleToFit} downsample keeps that quality while bounding the raster: the cost of a page
+     * becomes a function of the requested size, not of the page geometry.
+     *
+     * @since 2025.8
+     */
+    public static final int RENDER_SUPERSAMPLE = 2;
+
+    /**
+     * Absolute ceiling on the pixels of a single rendered page, whatever the page geometry, the dpi
+     * and the requested size.
+     * <p>
+     * 40 million pixels is about 160 MB as {@code TYPE_INT_RGB}. This is the last line of defence
+     * behind {@link #renderPage}: no caller may allocate more than this for one page.
+     *
+     * @since 2025.8
+     */
+    public static final long MAX_RENDERED_PIXELS = 40_000_000L;
 
     /**
      * Default maximum number of pages {@link #createThumbnails()} accepts to render.
@@ -196,6 +225,10 @@ public class PDFToImages {
      * is more detail than {@link #PREVIEW_PAGE_MAX_SIZE} keeps. Raising the cap costs nothing since
      * that detail is computed either way, raising the DPI grows the rendering cost quadratically for
      * pixels that are then thrown away.
+     * <p>
+     * Since 2025.8 this is an <b>upper bound</b>, not a target: {@link #renderPage} lowers it on a
+     * page large enough that 300 dpi would overflow {@link #PREVIEW_PAGE_MAX_SIZE} anyway. Normal
+     * page sizes are unaffected.
      *
      * @since 2025.6
      */
@@ -793,7 +826,9 @@ public class PDFToImages {
 
             for (int pageNum = chunkStart; pageNum <= chunkEnd; pageNum++) {
 
-                BufferedImage pageImage = renderer.renderImageWithDPI(pageNum - 1, dpi, ImageType.RGB);
+                // Bounded by the thumbnail size, never by the page geometry. See renderPage().
+                BufferedImage pageImage = renderPage(renderer, document, pageNum - 1, dpi,
+                        Math.max(width, height));
 
                 // Create scaled thumbnail
                 BufferedImage thumb = scaleToFit(pageImage, width, height);
@@ -877,7 +912,8 @@ public class PDFToImages {
 
             for (int pageIndex = 0; pageIndex < pageCount; pageIndex++) {
 
-                BufferedImage pageImage = renderer.renderImageWithDPI(pageIndex, dpi, ImageType.RGB);
+                // Bounded by the thumbnail size, never by the page geometry. See renderPage().
+                BufferedImage pageImage = renderPage(renderer, document, pageIndex, dpi, Math.max(width, height));
 
                 // Create scaled thumbnail
                 BufferedImage thumb = scaleToFit(pageImage, width, height);
@@ -1011,7 +1047,9 @@ public class PDFToImages {
             PDFTools.validatePageNumber(pageNum, pageCount, String.valueOf(pageNum));
 
             PDFRenderer renderer = new PDFRenderer(document);
-            BufferedImage pageImage = renderer.renderImageWithDPI(pageNum - 1, PREVIEW_DPI, ImageType.RGB);
+            // Bounded by PREVIEW_PAGE_MAX_SIZE, never by the page geometry. See renderPage().
+            BufferedImage pageImage = renderPage(renderer, document, pageNum - 1, PREVIEW_DPI,
+                    PREVIEW_PAGE_MAX_SIZE);
 
             Blob fullSizeBlob = imageToBlob(pageImage, "jpg", ".jpg", "image/jpeg", pageNum);
 
@@ -1091,7 +1129,85 @@ public class PDFToImages {
         }
     }
 
+    /**
+     * Render one page, never allocating more pixels than the caller is going to keep.
+     * <p>
+     * <b>Do not call {@code renderImageWithDPI} directly.</b> It derives the scale from the dpi alone,
+     * so the raster grows with the page geometry — and the page geometry comes from the file, which
+     * means it is attacker-controlled. The PDF specification allows a 14400x14400 pt page (200x200
+     * inches) in a few hundred bytes, and {@link PDFTools#MAX_PDF_SIZE} cannot catch that: the file is
+     * tiny, only its declared page box is huge. Measured with PDFBox 3.0.7 on such a page:
+     * <ul>
+     * <li>at 72 dpi (what the Web UI dialog asks for): 14400x14400 px, <b>791 MB</b>, and it
+     * <i>succeeds</i> — no error, just a server that dies under a handful of concurrent calls;</li>
+     * <li>at 150 dpi ({@link #DEFAULT_DPI}): 29999x29999 px, {@code OutOfMemoryError} on a 1 GB heap;</li>
+     * <li>PDFBox's own guard only fires above {@code Integer.MAX_VALUE} pixels, around 8 GB, so it
+     * protects nothing on a server.</li>
+     * </ul>
+     * Here the dpi is only an upper bound: the effective scale is whichever is smaller between the
+     * requested resolution and the one that fills {@code maxSide} times {@link #RENDER_SUPERSAMPLE}.
+     * A page bigger than the target is therefore rendered <i>smaller</i> than the dpi asks for, which
+     * is also a straight performance win on large-format documents (plans, posters, maps).
+     *
+     * @param renderer the renderer of {@code document}
+     * @param document the open PDF
+     * @param pageIndex the page to render, starting at 0
+     * @param renderDpi the wanted resolution, used as an upper bound only
+     * @param maxSide the longest side, in pixels, the caller will keep
+     * @return the rendered page, at most {@link #MAX_RENDERED_PIXELS} pixels
+     * @throws IOException if the rendering fails
+     * @since 2025.8
+     */
+    protected BufferedImage renderPage(PDFRenderer renderer, PDDocument document, int pageIndex, int renderDpi,
+            int maxSide) throws IOException {
+
+        PDRectangle box = document.getPage(pageIndex).getCropBox();
+        // A page rotation swaps the rendered sides, but not the longest one.
+        float longestPt = Math.max(box.getWidth(), box.getHeight());
+
+        float scale = renderDpi / 72f;
+
+        // The dpi is a ceiling, not a target: never render more than we are going to keep.
+        if (longestPt > 0f && maxSide > 0) {
+            scale = Math.min(scale, (maxSide * (float) RENDER_SUPERSAMPLE) / longestPt);
+        }
+
+        /*
+         * Last line of defence, for a degenerate box or a caller asking for MAX_THUMBNAIL_SIZE on a
+         * page that is already enormous. Scale down by the square root since the pixel count grows
+         * with the square of the scale.
+         */
+        long pixels = renderedPixels(box, scale);
+        if (pixels > MAX_RENDERED_PIXELS) {
+            scale *= (float) Math.sqrt((double) MAX_RENDERED_PIXELS / (double) pixels);
+            log.debug("Page {} of \"{}\" is {}x{} pt: rendering scale capped to {} to stay under {} pixels.",
+                    pageIndex + 1, pdfBlob.getFilename(), box.getWidth(), box.getHeight(), scale,
+                    MAX_RENDERED_PIXELS);
+        }
+
+        // A NaN or infinite box must not turn into a NaN scale, which PDFBox would carry into the raster.
+        if (!(scale > 0f) || Float.isInfinite(scale)) {
+            scale = 1f;
+        }
+
+        return renderer.renderImage(pageIndex, scale, ImageType.RGB);
+    }
+
+    /**
+     * Number of pixels {@code box} would occupy once rendered at {@code scale}.
+     *
+     * @since 2025.8
+     */
+    protected static long renderedPixels(PDRectangle box, float scale) {
+
+        long width = (long) Math.ceil(Math.abs(box.getWidth()) * scale);
+        long height = (long) Math.ceil(Math.abs(box.getHeight()) * scale);
+
+        return Math.max(1L, width) * Math.max(1L, height);
+    }
+
     public static BufferedImage scaleToFit(BufferedImage src, int maxWidth, int maxHeight) {
+
 
         int w = src.getWidth();
         int h = src.getHeight();

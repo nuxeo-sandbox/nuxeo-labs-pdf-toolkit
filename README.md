@@ -35,6 +35,9 @@ When they click one of these buttons, a "Destination" dialog allows for choosing
 Also, double-click on a thumbnail displays a bigger preview of the page, with a better rendition.
 
 > [!NOTE]
+> After a drag-and-drop, each tile displays its new position followed by its original page number in parentheses, for example `1 (5)`. **Extract and Remove always act on the original page numbers**, since they run on the current PDF, which the drag-and-drop has not modified. Selecting the tile labelled `1 (5)` and clicking "Extract" therefore extracts page 5. Use "Reorganize" to save a new page order.
+
+> [!NOTE]
 > Thumbnails and previews are cached in a TransientStore. So, opening the same PDF shortly after the first opening displays the thumbnails very quickly. Displaying the same preview is also faster.
 
 > [!NOTE]
@@ -405,6 +408,23 @@ All these have defaults, so the plugin handles a 1000 pages PDF out of the box, 
 
 <br />
 
+### Rendering limits
+
+On top of the properties above, a few limits are hardcoded because they protect the server rather than tune it. They are not configurable on purpose.
+
+| Limit | Value | Why |
+| --- | --- | --- |
+| Max PDF size | 200 MB | PDFBox loads the document in memory. |
+| Max dpi | 300 | Above this a single page can exhaust the heap. |
+| Max thumbnail side | 2000 px | Same reason. |
+| Max pixels per rendered page | 40 million (~160 MB) | Absolute ceiling, whatever the page size, the dpi and the requested thumbnail size. |
+
+That last one matters more than it looks. The cost of rendering a page is driven by the **page geometry**, which comes from the file — and the PDF format allows a 200 x 200 inches page in a file of a few hundred bytes. Asking for a 256 px thumbnail of such a page used to make PDFBox allocate several hundred megabytes, or simply run out of memory, so a tiny file was enough to bring a server down.
+
+The plugin now derives the rendering scale from the **requested output size**, using the dpi only as an upper bound: a page larger than the target is rendered smaller than the dpi asks for. Normal page sizes are unaffected — a Letter or A4 page still renders exactly as before — and large-format documents (plans, posters, maps) simply became much faster.
+
+<br />
+
 ## Installation
 
 The plugin is available on [Nuxeo MarketPlace](https://connect.nuxeo.com/nuxeo/site/marketplace/package/nuxeo-labs-pdf-toolkit), for LTS 2025 and LTS 2023. So you can
@@ -424,10 +444,11 @@ cd nuxeo-labs-pdf-toolkit
 mvn clean install
 ```
 
-The Web UI part has one standalone check, for the scroll position of the thumbnails dialog. It needs only `node`, no PDF and no server, and is not part of the Maven build:
+The Web UI part has standalone checks, for the scroll position of the thumbnails dialog and for the page numbering sent to the operations. They need only `node`, no PDF and no server, and are not part of the Maven build:
 
 ```bash
 node nuxeo-labs-pdf-toolkit-webui/src/test/js/scroll-harness.js
+node nuxeo-labs-pdf-toolkit-webui/src/test/js/selection-harness.js
 ```
 
 <br />

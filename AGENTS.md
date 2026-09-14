@@ -182,15 +182,32 @@ All operations are reachable by any authenticated user, so `PDFToImages` clamps 
 **inside the setters** (`setWidth` / `setHeight` / `setDpi`). Never assign `width`, `height` or
 `dpi` directly, and never trust an operation `@Param`.
 
+**The page geometry is an attacker-controlled input too, and it is the one that drives the
+allocation.** Never call `PDFRenderer.renderImageWithDPI` — it derives the scale from the dpi alone,
+so the raster grows with the page size. The PDF spec allows a 14400x14400 pt page (200x200 inches)
+in a ~600 bytes file, which `MAX_PDF_SIZE` cannot catch. Measured with PDFBox 3.0.7 on such a page:
+791 MB at 72 dpi (and it *succeeds*, silently), `OutOfMemoryError` at 150 dpi on a 1 GB heap.
+PDFBox's own guard only fires above `Integer.MAX_VALUE` pixels, around 8 GB — it protects nothing.
+Every rendering therefore goes through **`renderPage(renderer, doc, pageIndex, dpi, maxSide)`**,
+which takes `min(dpi/72, maxSide * RENDER_SUPERSAMPLE / longestSidePt)` and then applies
+`MAX_RENDERED_PIXELS`. `shouldNotBlowUpOnAHugePageGeometry*` guard this.
+
+The supersampling is not decoration: rendering straight at the target size makes text thin and
+aliased, which is why the original code rendered at a fixed dpi and let `scaleToFit` downsample.
+Keep a factor ≥ 2, or the thumbnails get visibly worse.
+
 | Constant | Value | Why |
 |---|---|---|
 | `DEFAULT_DPI` | 150 | Thumbnails are downscaled anyway; 512 rendered ~76 MB per A4 page. |
 | `MAX_DPI` | 300 | Above this a single page can exhaust the heap. |
 | `MAX_THUMBNAIL_SIZE` | 2000 | Same reason. |
+| `RENDER_SUPERSAMPLE` | 2 | Pixels rendered per pixel kept, on the longest side. Quality vs. memory. |
+| `MAX_RENDERED_PIXELS` | 40 M (~160 MB) | Absolute ceiling for one page, whatever the geometry, the dpi and the requested size. |
 | `DEFAULT_MAX_PAGES` | 150 | The thumbnails operation builds the whole base64 payload in memory, ~230 KB of heap per page. Applies to `GetThumbnails` only — **not** to `PrepareThumbnails`, which is bounded by the chunk, nor to extract/remove/reorder. |
 | `DEFAULT_THUMBNAILS_MAX_PAGES` | 2000 | Plafond of `PrepareThumbnails`. Not about the server (rendering is chunked) but about the browser: one tile per page, and a few thousand tiles freeze a tab. |
 | `PDFTools.MAX_PDF_SIZE` | 200 MB | PDFBox loads the document in memory. Checked in `checkIsProcessablePdf`. |
 | `PREVIEW_DPI` / `PREVIEW_PAGE_MAX_SIZE` | 300 / 2048 | Preview is rendered then resized by the `pictureResize` converter. Cache and return the **resized** blob, not the full-size one. Raise the cap, never the DPI: the 300 dpi render already holds more detail than the cap keeps, so the cap is free while the DPI costs quadratically. |
+
 
 ## Configuration properties
 
@@ -281,6 +298,13 @@ Polymer 2 / Web UI legacy elements under
   and all operation calls. Children are dumb and event-based:
   - `-thumbnails.html` → selection/drag-drop, exposes `getSelectedPageRanges()` /
     `getNewPageOrder()`, notifies `hasSelection` / `hasReordered`, fires `page-preview`.
+    **Both getters speak in `originalPageNumber`, never in grid positions.** Extract and Remove run
+    on the source PDF, which a drag and drop does *not* reorder: returning positions made the
+    first tile after a reorder resolve to original page 1 instead of page 5, so Extract produced the
+    wrong pages and Remove + `newFile` silently deleted them. `_getSelectedPageRanges()` therefore
+    collects `originalPageNumber` **and sorts ascending** before folding the ranges — the folding
+    loop assumes an ascending list, which positions gave for free and original numbers do not.
+    `selection-harness.js` guards this.
     Drag and drop moves **every selected page**, not just the grabbed tile, and regroups them
     contiguously at the drop point keeping their relative order. Grabbing a tile outside the
     selection makes it the selection first. Two rules to keep in mind when touching it:
@@ -371,17 +395,20 @@ Polymer 2 / Web UI legacy elements under
 - `debug` attribute on `<nuxeo-pdf-toolkit>` traces the whole chain in the console (visible pages,
   chunk queued/skipped/applied, tiles filled). There is no UI test harness, so this is the only
   diagnostic available — keep it working.
-- **One UI check is automated**, and it is the only one:
+- **Two UI checks are automated**, and they are the only ones:
 
   ```bash
   node nuxeo-labs-pdf-toolkit-webui/src/test/js/scroll-harness.js
+  node nuxeo-labs-pdf-toolkit-webui/src/test/js/selection-harness.js
   ```
 
-  It loads the real element definition out of `nuxeo-pdf-toolkit.html`, mocks everything around the
-  scroll and replays the preview scenario. No PDF, no server, no browser, ~1.5 s. **Run it after
-  touching the scroll, preview or dialog logic.** It is deliberately outside `mvn clean install`:
-  the plugin has no JS build, and adding Node to the build for one file would cost more than it is
-  worth. It calls private methods, so renaming them breaks it — fix the harness, do not delete it.
+  Both load the real element definition out of the HTML and mock everything around it. No PDF, no
+  server, no browser, ~1.5 s each. `scroll-harness.js` replays the preview scenario — **run it after
+  touching the scroll, preview or dialog logic**. `selection-harness.js` pins the page numbering sent
+  to the operations — **run it after touching the selection, drag and drop or range logic**. They are
+  deliberately outside `mvn clean install`: the plugin has no JS build, and adding Node to the build
+  for two files would cost more than it is worth. They call private methods, so renaming them breaks
+  them — fix the harness, do not delete it.
 - `.page-thumbnail` has a **fixed 120x170 box with `object-fit: contain`**. Without a reserved
   size, each incoming image reflows the grid and the browser — seeing a compact grid — schedules
   far more fetches than the viewport needs.
@@ -399,8 +426,8 @@ Polymer 2 / Web UI legacy elements under
   and maps `messages-fr.json` to both `fr` and `fr-FR`. Add every new key to both files, and
   never hardcode a user-visible string in an element.
 - There is no test harness for the UI — changes here are verified by `mvn clean install`
-  compiling/packaging only, and manually in a running server. The single exception is
-  `src/test/js/scroll-harness.js`, see above.
+  compiling/packaging only, and manually in a running server. The only exceptions are the two
+  harnesses in `src/test/js/`, see above.
 
 ## Conventions
 

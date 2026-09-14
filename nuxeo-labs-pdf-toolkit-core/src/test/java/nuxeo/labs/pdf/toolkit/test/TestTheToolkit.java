@@ -25,7 +25,9 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.awt.image.BufferedImage;
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -45,6 +47,10 @@ import org.apache.logging.log4j.core.LogEvent;
 import org.apache.logging.log4j.core.Logger;
 import org.apache.logging.log4j.core.appender.AbstractAppender;
 import org.apache.logging.log4j.core.config.Configurator;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.PDPage;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
+import org.apache.pdfbox.rendering.PDFRenderer;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Before;
@@ -56,6 +62,7 @@ import org.nuxeo.ecm.automation.OperationContext;
 import org.nuxeo.ecm.automation.core.util.BlobList;
 import org.nuxeo.ecm.automation.test.AutomationFeature;
 import org.nuxeo.ecm.core.api.Blob;
+import org.nuxeo.ecm.core.api.Blobs;
 import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
 import org.nuxeo.ecm.core.api.NuxeoException;
@@ -276,13 +283,120 @@ public class TestTheToolkit {
     @Test
     public void shouldRejectNonPdfBlob() throws Exception {
 
-        Blob notAPdf = org.nuxeo.ecm.core.api.Blobs.createBlob("I am not a PDF", "text/plain");
+        Blob notAPdf = Blobs.createBlob("I am not a PDF", "text/plain");
         try {
             new PDFToImages(notAPdf);
             fail("Should have rejected a non-PDF blob");
         } catch (NuxeoException e) {
             assertTrue(e.getMessage().contains("is not a PDF"));
         }
+    }
+
+    // ========================================
+    // Rendering bounds: the page geometry is an attacker-controlled input too
+    // ========================================
+
+    /** Records the size of every raster PDFBox is actually asked to produce. */
+    static class RecordingPDFToImages extends PDFToImages {
+
+        final List<Long> renderedPixels = Collections.synchronizedList(new ArrayList<>());
+
+        RecordingPDFToImages(Blob b) {
+            super(b);
+        }
+
+        @Override
+        protected BufferedImage renderPage(PDFRenderer renderer, PDDocument document, int pageIndex, int renderDpi,
+                int maxSide) throws IOException {
+
+            BufferedImage image = super.renderPage(renderer, document, pageIndex, renderDpi, maxSide);
+            renderedPixels.add((long) image.getWidth() * (long) image.getHeight());
+
+            return image;
+        }
+    }
+
+    /**
+     * A one page PDF declaring a square page of {@code sidePt} points. 14400 pt is the largest page
+     * the PDF specification allows, and the resulting file is under a kilobyte: the
+     * {@link nuxeo.labs.pdf.toolkit.PDFTools#MAX_PDF_SIZE} cap cannot catch it.
+     */
+    protected Blob hugePageBlob(float sidePt) throws IOException {
+
+        Blob blob = Blobs.createBlobWithExtension(".pdf");
+        try (PDDocument doc = new PDDocument()) {
+            doc.addPage(new PDPage(new PDRectangle(sidePt, sidePt)));
+            doc.save(blob.getFile());
+        }
+        blob.setFilename("huge-mediabox.pdf");
+        blob.setMimeType("application/pdf");
+
+        return blob;
+    }
+
+    protected void assertRenderedWithinCeiling(RecordingPDFToImages tool) {
+
+        assertFalse("Nothing was rendered at all", tool.renderedPixels.isEmpty());
+        for (long pixels : tool.renderedPixels) {
+            assertTrue("A single page was rendered as " + pixels + " pixels, above the "
+                    + PDFToImages.MAX_RENDERED_PIXELS + " ceiling", pixels <= PDFToImages.MAX_RENDERED_PIXELS);
+        }
+    }
+
+    /**
+     * The whole point of {@link PDFToImages#renderPage}: before it, this ~600 bytes PDF asked PDFBox
+     * for a 29999x29999 raster at the default 150 dpi, that is 3.4 GB, and an OutOfMemoryError on any
+     * reasonable heap. At the 72 dpi the dialog uses it did not even fail — it quietly allocated
+     * 791 MB per page.
+     */
+    @Test
+    public void shouldNotBlowUpOnAHugePageGeometry() throws Exception {
+
+        RecordingPDFToImages tool = new RecordingPDFToImages(hugePageBlob(14400f));
+
+        BlobList thumbnails = tool.createThumbnails(256, 256);
+        assertEquals(1, thumbnails.size());
+
+        ImageInfo info = Framework.getService(ImagingService.class).getImageInfo(thumbnails.get(0));
+        assertTrue("Unexpected thumbnail size: " + info.getWidth() + "x" + info.getHeight(),
+                info.getWidth() <= 256 && info.getHeight() <= 256);
+
+        assertRenderedWithinCeiling(tool);
+
+        // And the cost must follow the requested size, not the page geometry
+        long allowed = (long) (256 * PDFToImages.RENDER_SUPERSAMPLE) * (256 * PDFToImages.RENDER_SUPERSAMPLE);
+        assertTrue("Rendered " + tool.renderedPixels.get(0) + " pixels for a 256 px thumbnail",
+                tool.renderedPixels.get(0) <= allowed);
+    }
+
+    @Test
+    public void shouldNotBlowUpOnAHugePageGeometryForThePreview() throws Exception {
+
+        RecordingPDFToImages tool = new RecordingPDFToImages(hugePageBlob(14400f));
+
+        Blob preview = tool.getJpegPreviewImage(1);
+
+        ImageInfo info = Framework.getService(ImagingService.class).getImageInfo(preview);
+        assertTrue(info.getWidth() <= PDFToImages.PREVIEW_PAGE_MAX_SIZE);
+        assertTrue(info.getHeight() <= PDFToImages.PREVIEW_PAGE_MAX_SIZE);
+
+        assertRenderedWithinCeiling(tool);
+    }
+
+    /**
+     * The bound must not degrade a normal document: the thumbnail of a portrait page still fills the
+     * requested box exactly as before, only the intermediate raster is smaller.
+     */
+    @Test
+    public void shouldStillFillTheRequestedBoxOnANormalPage() throws Exception {
+
+        BlobList thumbnails = new PDFToImages(createTestDocBlob()).createThumbnails(512, 512);
+
+        ImageInfo info = Framework.getService(ImagingService.class).getImageInfo(thumbnails.get(0));
+        assertTrue("A portrait page must still reach the box height: " + info.getWidth() + "x" + info.getHeight(),
+                info.getHeight() > 512 * 0.95);
+        assertTrue(info.getHeight() <= 512);
+        assertTrue(info.getWidth() <= 512);
     }
 
     @Test
