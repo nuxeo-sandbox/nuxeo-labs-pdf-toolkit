@@ -174,7 +174,7 @@ Values above the maximum are silently clamped rather than rejected.
 
 ### `PDFLabs.JpegImagePreview`
 
-Returns a `blob`, the jpeg of the preview, size max 1024x1024, and dpi 300.
+Returns a `blob`, the jpeg of the preview, size max 2048x2048, and dpi 300.
 
 * Input: Either a `blob` or a `document`. If a `document`, `xpath` is the field to use, `file:content` by default.
 * Output: `blob`, the jpeg preview of the page

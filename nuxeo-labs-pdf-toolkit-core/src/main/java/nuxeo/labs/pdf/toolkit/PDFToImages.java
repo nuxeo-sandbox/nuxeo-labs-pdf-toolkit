@@ -119,11 +119,25 @@ public class PDFToImages {
      */
     public static final String MAX_PAGES_PROPERTY = "nuxeo.pdftoolkit.maxPages";
 
-    public static final int PREVIEW_PAGE_MAX_SIZE = 1024;
+    /**
+     * Largest side of a single page preview, in pixels.
+     * <p>
+     * The preview is displayed nearly full screen (a 90vh dialog holding an image at 95% of its
+     * height), so a high DPI screen asks for roughly 1850 device pixels of height. At 1024 the image
+     * was upscaled almost twofold and looked soft.
+     *
+     * @since 2025.2
+     */
+    public static final int PREVIEW_PAGE_MAX_SIZE = 2048;
 
     /**
      * Rendering resolution used for a single page preview, before it is resized to
      * {@link #PREVIEW_PAGE_MAX_SIZE}.
+     * <p>
+     * Do not raise it to sharpen the preview: a Letter page already renders to 2550x3300 here, which
+     * is more detail than {@link #PREVIEW_PAGE_MAX_SIZE} keeps. Raising the cap costs nothing since
+     * that detail is computed either way, raising the DPI grows the rendering cost quadratically for
+     * pixels that are then thrown away.
      *
      * @since 2025.6
      */

@@ -148,7 +148,7 @@ All operations are reachable by any authenticated user, so `PDFToImages` clamps 
 | `MAX_DPI` | 300 | Above this a single page can exhaust the heap. |
 | `MAX_THUMBNAIL_SIZE` | 2000 | Same reason. |
 | `DEFAULT_MAX_PAGES` | 150 | The thumbnails operation builds the whole base64 payload in memory, ~230 KB of heap per page. Applies to thumbnails only, not to extract/remove/reorder. |
-| `PREVIEW_DPI` / `PREVIEW_PAGE_MAX_SIZE` | 300 / 1024 | Preview is rendered then resized by the `pictureResize` converter. Cache and return the **resized** blob, not the full-size one. |
+| `PREVIEW_DPI` / `PREVIEW_PAGE_MAX_SIZE` | 300 / 2048 | Preview is rendered then resized by the `pictureResize` converter. Cache and return the **resized** blob, not the full-size one. Raise the cap, never the DPI: the 300 dpi render already holds more detail than the cap keeps, so the cap is free while the DPI costs quadratically. |
 
 ## Configuration properties
 

@@ -40,7 +40,7 @@ import nuxeo.labs.pdf.toolkit.PDFTools;
  */
 @Operation(id = PDFJpegimagePreviewOp.ID, category = Constants.CAT_CONVERSION, label = "PDF Jpeg Image Preview", description = ""
         + "Input is either a Blob or a document. If a document, xpath is the field to use, file:content by default."
-        + " pageNumber is an integer, starting at 1. Result jpeg is max 1024x1024, dpi 300."
+        + " pageNumber is an integer, starting at 1. Result jpeg is max 2048x2048, dpi 300."
         + " asBase64 is boolean, optional. If true, returns a text/plain blob with the base64")
 public class PDFJpegimagePreviewOp {
 

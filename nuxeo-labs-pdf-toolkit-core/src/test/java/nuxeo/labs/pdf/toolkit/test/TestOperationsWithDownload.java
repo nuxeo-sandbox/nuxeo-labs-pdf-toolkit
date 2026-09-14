@@ -265,6 +265,12 @@ public class TestOperationsWithDownload {
         assertEquals("jpeg", info.getFormat().toLowerCase());
         assertTrue(info.getHeight() <= PDFToImages.PREVIEW_PAGE_MAX_SIZE);
         assertTrue(info.getWidth() <= PDFToImages.PREVIEW_PAGE_MAX_SIZE);
+        /*
+         * The upper bound alone would be satisfied by a 200px preview. The test fixture is a portrait
+         * Letter page, so its height is what the resize clamps: it must actually reach the cap.
+         */
+        assertTrue("The preview should reach the cap, not stop short: " + info.getWidth() + "x" + info.getHeight(),
+                info.getHeight() > PDFToImages.PREVIEW_PAGE_MAX_SIZE * 0.9);
 
     }
 
