@@ -121,7 +121,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         <span class="page-count" hidden$="[[!_pageCount]]">[[i18n('pdftoolkit.label.pageCount', _pageCount)]]</span>
       </div>
 
-      <div class="dialog-content">
+      <div class="dialog-content" id="dialogContent">
         <!-- Running operation indicator -->
         <template is="dom-if" if="[[_runningOperation]]">
           <div class="runningOperation-overlay">
@@ -171,7 +171,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       </div>
     </paper-dialog>
 
-    <nuxeo-pdf-toolkit-preview id="preview"></nuxeo-pdf-toolkit-preview>
+    <nuxeo-pdf-toolkit-preview id="preview" on-iron-overlay-closed="_onPreviewDialogClosed"></nuxeo-pdf-toolkit-preview>
 
   </template>
 
@@ -309,6 +309,12 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         _chunkLoading: {
           type: Boolean,
           value: false
+        },
+
+        // Scroll position of the grid before a preview overlay is opened on top of it
+        _scrollTopBeforePreview: {
+          type: Number,
+          value: 0
         }
 
       },
@@ -371,7 +377,44 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       // UI events from children
       // ==============================================
       _onPagePreview: function(e) {
+        /*
+         * Remember where the grid is. Opening and closing a second, modal overlay on top of this one
+         * can send the scrolling container back to the top, which used to drop the user on page 1
+         * every time a preview was closed.
+         */
+        this._scrollTopBeforePreview = this.$.dialogContent ? this.$.dialogContent.scrollTop : 0;
+
+        if (this.debug) {
+          console.log('[pdf-toolkit] preview opening for page ' + e.detail.pageNum
+            + ', scrollTop=' + this._scrollTopBeforePreview);
+        }
+
         this.$.preview.loadPreviewPage(this.document, e.detail.pageNum);
+      },
+
+      /**
+       * The preview dialog closed: put the grid back where it was and make sure it is still live.
+       *
+       * Restoring the scroll is defensive — it costs nothing when the position was kept. Rebinding
+       * is not: a detach/attach cycle strips the scroll listener, and without it scrolling silently
+       * stops loading any new thumbnail.
+       */
+      _onPreviewDialogClosed: function() {
+        var container = this.$.dialogContent;
+        if (container && this._scrollTopBeforePreview && container.scrollTop !== this._scrollTopBeforePreview) {
+          if (this.debug) {
+            console.log('[pdf-toolkit] preview closed, restoring scrollTop '
+              + container.scrollTop + ' -> ' + this._scrollTopBeforePreview);
+          }
+          container.scrollTop = this._scrollTopBeforePreview;
+        } else if (this.debug) {
+          console.log('[pdf-toolkit] preview closed, scrollTop kept at '
+            + (container ? container.scrollTop : 'n/a'));
+        }
+
+        if (this.$.thumbnails) {
+          this.$.thumbnails.refreshScrollBinding();
+        }
       },
 
       _onActionComplete: function(e) {

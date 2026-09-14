@@ -285,10 +285,31 @@ Actions are taken by the parent via events.
 
         // --- Public API for parent ---
 
+        attached: function() {
+          /*
+           * The scroll listener used to be bound only from _sourcesChanged, which runs once. A
+           * detach/attach cycle — a stack of Polymer overlays does provoke one — then left the grid
+           * with no scroll handling at all, and no chunk ever loaded again: scrolling looked dead
+           * while the already loaded thumbnails stayed on screen. Rebind on every attach.
+           */
+          this.async(function() {
+            this.refreshScrollBinding();
+          }.bind(this), 50);
+        },
+
         detached: function() {
           // A drag interrupted by a detach would leave the auto-scroll timer running forever
           this._stopAutoScroll();
           this._unbindScroll();
+        },
+
+        /**
+         * Make sure the scroll listener is attached to the current scrolling ancestor, then look at
+         * what is on screen. Safe to call at any time.
+         */
+        refreshScrollBinding: function() {
+          this._bindScroll();
+          this._scheduleChunkScan();
         },
 
         reset: function() {
@@ -367,14 +388,6 @@ Actions are taken by the parent via events.
           return applied;
         },
 
-        /**
-         * Ask the parent for whatever is on screen. Called after the first render and after a
-         * reorder, when the visible pages changed without any scrolling.
-         */
-        requestVisibleChunks: function() {
-          this._scheduleChunkScan();
-        },
-
         // --- React to sources changes ---
 
         _sourcesChanged: function(sources) {
@@ -415,14 +428,24 @@ Actions are taken by the parent via events.
 
         // --- Lazy loading of the chunks ---
 
+        /**
+         * Idempotent and self-healing: re-attaches whenever the scrolling ancestor changed or left
+         * the document. Returning early on "something is already bound" was not enough — once the
+         * node it was bound to went away, nothing ever restored the listener.
+         */
         _bindScroll: function() {
-          if (this._scrollContainer) {
-            return;
-          }
           var container = this._getScrollContainer();
           if (!container) {
             return;
           }
+
+          // Already bound to the right node, and that node is still in the document: nothing to do
+          if (this._scrollContainer === container && document.contains(container)) {
+            return;
+          }
+
+          this._unbindScroll();
+
           // Keep the node itself: on detach, walking up the tree no longer reaches it, and the
           // listener would stay behind forever.
           this._scrollContainer = container;
@@ -434,7 +457,7 @@ Actions are taken by the parent via events.
           window.addEventListener('resize', this._resizeHandler, { passive: true });
 
           if (this.debug) {
-            console.log('[pdf-toolkit] scroll listener attached');
+            console.log('[pdf-toolkit] scroll listener (re)attached');
           }
         },
 
@@ -543,6 +566,15 @@ Actions are taken by the parent via events.
 
         // --- Selection logic ---
 
+        /**
+         * Select pages, touching only the ones whose state actually changes.
+         *
+         * Never loop a `set()` over every page: on a 1000 pages document that is 1000 Polymer
+         * notifications per click, 999 of them rewriting false over false. A double click fires two
+         * clicks before the dblclick, so it used to cost 2000 notifications in a row, which re-rendered
+         * the whole dom-repeat, made the container lose its height and sent scrollTop back to 0 —
+         * the dialog jumped back to page 1 on every preview.
+         */
         _togglePageSelection: function(e) {
           var index = e.model.index;
           var isMetaKey = e.metaKey || e.ctrlKey; // Cmd on Mac / Ctrl on Windows
@@ -553,7 +585,7 @@ Actions are taken by the parent via events.
             var start = Math.min(this._lastSelectedIndex, index);
             var end = Math.max(this._lastSelectedIndex, index);
             this.pages.forEach(function(page, i) {
-              if (i >= start && i <= end) {
+              if (i >= start && i <= end && !page.selected) {
                 this.set('pages.' + i + '.selected', true);
               }
             }.bind(this));
@@ -563,13 +595,29 @@ Actions are taken by the parent via events.
             this._lastSelectedIndex = index;
           } else {
             // Single selection
-            this.pages.forEach(function(page, i) {
-              this.set('pages.' + i + '.selected', i === index);
-            }.bind(this));
+            this._selectOnly(index);
             this._lastSelectedIndex = index;
           }
 
           this.set('hasSelection', this._computeHasSelection());
+        },
+
+        /**
+         * Make `index` the only selected page, notifying only what changes.
+         *
+         * @return {number} how many pages changed state
+         */
+        _selectOnly: function(index) {
+          var changed = 0;
+          this.pages.forEach(function(page, i) {
+            var shouldSelect = (i === index);
+            if (page.selected !== shouldSelect) {
+              this.set('pages.' + i + '.selected', shouldSelect);
+              changed++;
+            }
+          }.bind(this));
+
+          return changed;
         },
 
         _computePageNumber: function(index, originalPageNumber) {
@@ -697,14 +745,12 @@ Actions are taken by the parent via events.
           /*
            * Grabbing a tile outside the selection makes it the selection, the way a desktop file
            * manager does. Without this, tiles would stay highlighted while not moving.
-           * this.set() on a path only updates the class of the existing node, it does not recreate
-           * it, so the drag is not interrupted.
+           * _selectOnly() only notifies the pages that actually change: a set() on every page would
+           * re-render the dom-repeat mid-gesture and abort the drag.
            */
           var dragged = this.pages[this._draggedIndex];
           if (dragged && !dragged.selected) {
-            this.pages.forEach(function(page, index) {
-              this.set('pages.' + index + '.selected', index === this._draggedIndex);
-            }.bind(this));
+            this._selectOnly(this._draggedIndex);
             this._lastSelectedIndex = this._draggedIndex;
             this.set('hasSelection', true);
           }

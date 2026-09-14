@@ -325,6 +325,19 @@ Polymer 2 / Web UI legacy elements under
     `_chunkQueue`**; two overlapping calls would fight over `op.params`.
   - A tile with no image yet shows a transparent-pixel data URL, **never `src=""`**: an empty src
     makes some browsers refetch the current page.
+- **Never loop a `set()` over every page.** Selection helpers go through `_selectOnly()`, which
+  notifies only the pages whose state actually changes. A `set()` per page is 1000 Polymer
+  notifications on a long document, and a double click fires two `click` before the `dblclick`, so
+  it was 2000 in a row: the `dom-repeat` re-rendered wholesale, the container lost its height and
+  `scrollTop` fell back to 0 — opening a page preview sent the user back to page 1.
+- **The scroll listener must survive a detach.** It is bound from `attached()` **and** from
+  `_sourcesChanged`, and `_bindScroll()` is idempotent and self-healing: it re-attaches when the
+  scrolling ancestor changed or left the document. Binding once from `_sourcesChanged` was not
+  enough — a stack of Polymer overlays (opening the page preview) detaches and re-attaches the
+  element, and the grid then stopped loading anything on scroll, silently. `refreshScrollBinding()`
+  is the public entry point, called by the orchestrator when the preview closes.
+- The orchestrator saves `scrollTop` before opening the preview and restores it on
+  `iron-overlay-closed`. Defensive, and free when the position was kept.
 - `debug` attribute on `<nuxeo-pdf-toolkit>` traces the whole chain in the console (visible pages,
   chunk queued/skipped/applied, tiles filled). There is no UI test harness, so this is the only
   diagnostic available — keep it working.
