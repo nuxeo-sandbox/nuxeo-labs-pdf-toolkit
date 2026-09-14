@@ -103,9 +103,9 @@ To override it, copy the contribution and tune it, typically in your Studio proj
 | `icon` | `icons:build` | Icon of the action button. |
 | `label` | `PDF Toolkit` | Label of the button, used as a translation key and as the tooltip. |
 | `showLabel` | `false` | Display the label next to the icon. |
-| `thumbnailWidth` | `256` | Max width, in pixels, of the thumbnails asked of the server. |
+| `thumbnailWidth` | `256` | Max width, in pixels, of the thumbnails asked of the server. Snapped to the size ladder, see "Rendering sizes are snapped to a ladder". |
 | `thumbnailHeight` | `256` | Max height, in pixels. The CSS displays the tiles at 120px, so 256 still covers a high density screen. |
-| `thumbnailDpi` | `72` | Rendering resolution. **The rendering cost grows with the square of the dpi**, so this is the setting to change if the grid is slow to fill — not the width and height, which barely matter. |
+| `thumbnailDpi` | `72` | Rendering resolution, snapped to `72`, `150` or `300`. **The rendering cost grows with the square of the dpi**, so this is the setting to change if the grid is slow to fill — not the width and height, which barely matter. |
 | `debug` | `false` | Trace the chunk loading in the browser console. Can also be turned on without touching Studio, with `window.NUXEO_PDF_TOOLKIT_DEBUG = true` or `localStorage.setItem('NUXEO_PDF_TOOLKIT_DEBUG', '1')`. See "Checking the chunking". |
 
 The `thumbnail*` attributes only affect this dialog. The defaults of the operations themselves stay at 512 px / 150 dpi, so Studio projects and scripts calling `PDFLabs.PrepareThumbnails` or `PDFLabs.GetThumbnails` are not impacted.
@@ -115,8 +115,8 @@ Example, sharper thumbnails and console traces:
 ```html
 <nuxeo-slot-content name="demoPdfToolkit" slot="DOCUMENT_ACTIONS" order="1">
   . . .
-        <nuxeo-pdf-toolkit document="[[document]]" thumbnail-width="384" thumbnail-height="384"
-                           thumbnail-dpi="110" debug></nuxeo-pdf-toolkit>
+        <nuxeo-pdf-toolkit document="[[document]]" thumbnail-width="512" thumbnail-height="512"
+                           thumbnail-dpi="150" debug></nuxeo-pdf-toolkit>
   . . .
 </nuxeo-slot-content>
 ```
@@ -164,9 +164,9 @@ Only the chunk holding `startPage` is rendered, so a 1000 pages PDF opens as fas
 * Parameters:
   * `xpath`: String, optional. `file:content` by default.
   * `startPage`: Integer, optional. Default 1. Any page of the wanted chunk — it is snapped to the start of its chunk, so 1 and 50 both render the first chunk when the chunk size is 50.
-  * `width`: Integer, optional. Default 512, maximum 2000.
-  * `height`: Integer, optional. Default 512, maximum 2000.
-  * `dpi`: Integer, optional. Default 150, maximum 300.
+  * `width`: Integer, optional. Default 512, maximum 2000. Snapped to the size ladder.
+  * `height`: Integer, optional. Default 512, maximum 2000. Snapped to the size ladder.
+  * `dpi`: Integer, optional. Default 150, maximum 300. Snapped to `72`, `150` or `300`.
 
 `rendered` and `renderTimeMs` are diagnostics: `"rendered": false` means the chunk came straight from the cache, so **the PDF was not opened at all**. They are visible in the browser network tab, which is the quickest way to check the chunking on a running server.
 
@@ -191,10 +191,11 @@ The `v` parameter is the **digest of the PDF**. It makes the URL content-address
 
 Each URL is served by the plugin REST endpoint, `GET /nuxeo/site/pdftoolkit/thumb/{docId}/{pageNumber}`, which:
 
-* resolves the document through the **current user session**, so the read permission is enforced by the repository;
+* resolves the document through the **current user session**, so the read permission is enforced by the repository — a user who cannot read the document gets a 403 or a 404, never an image, and warming the cache as an administrator does not change that;
 * only **reads** the cache filled by the operation on the nominal path — it never reopens the PDF, which is what makes serving a long document cheap;
 * falls back on rendering the **whole chunk** holding the page — never that single page — if the cache entry expired in the meantime, and takes a lock so that several browser connections hitting the same cold chunk only trigger one rendering;
-* sends an `ETag` in every case, plus `Cache-Control: private, max-age=3600` when `v` is present, or `private, no-cache` when it is not — a plain URL is then revalidated on each request, which costs a `304` rather than a full transfer.
+* sends an `ETag` in every case, plus `Cache-Control: private, max-age=3600` when `v` is present, or `private, no-cache` when it is not — a plain URL is then revalidated on each request, which costs a `304` rather than a full transfer;
+* answers `400` for a request it cannot honour (the document has no blob at that `xpath`, the blob is not a PDF, the property does not exist) and `404` for an unknown document or a page beyond the end of the PDF.
 
 > [!NOTE]
 > Serving every page of a document costs one PDF opening **per chunk**, never one per page: 20 openings for a 1000 pages PDF with the default chunk size. See "Checking the chunking" below to observe it.
@@ -259,10 +260,10 @@ Returns a JSON array of Base64 encoded jpeg thumbnails. To use one in an `<img s
   * `height`: Integer, optional. The max. height of each thumbnail. Default value is 512, maximum 2000.
   * `dpi`: Integer, optional. The dpi to use when creating the images. Default value is 150, maximum 300.
 
-Values above the maximum are silently clamped rather than rejected.
+Values are snapped down to the rendering ladder (see "Rendering sizes are snapped to a ladder"), and values above the maximum are clamped rather than rejected.
 
 > [!WARNING]
-> As all is in memory as base64, the number of pages is limited: the operation fails on a PDF holding more than 150 pages. See "Configuration Properties" below to change this limit. `PDFLabs.PrepareThumbnails` has no such constraint, it renders by chunks.
+> As all is in memory as base64, this operation is limited twice: it fails on a PDF holding more than 150 pages (see "Configuration Properties" below to change this limit), and it fails as soon as the thumbnails exceed 5 MB, since the base64 payload and its copies cost about four times that in heap. `PDFLabs.PrepareThumbnails` has no such constraint, it renders by chunks.
 
 <br />
 
@@ -342,7 +343,7 @@ For some destination, an extra `details`field, object, can be passed (optional):
 * When `"derivative"`, `details` can have:
   * `"resetLifeCycle"`, a boolean, `false` by default.
   * `"derivativeTitle"`, string, the title to use for the copy. Default is the resulting PDF file name. A title holding a `/` is accepted: it is kept as `dc:title` and normalized for the document name.
-* When `"attachments"`, `details` can have an `xpath` value, the field of type multivalued Blob where to append the resulting PDF. Default is `files:files`. The field **must** be multivalued: the operation fails explicitly on a single-valued blob field, rather than silently overwriting it.
+* When `"attachments"`, `details` can have an `xpath` value, the field of type multivalued Blob where to append the resulting PDF. Default is `files:files`. The field **must** be a multivalued *blob* field: the operation fails explicitly on a single-valued blob field, rather than silently overwriting it, and on a multivalued field that does not hold blobs (`dc:subjects`, say).
 * When `"newFile"`, `details` can have:
   *`"createVersion"`, boolean, default `false`.
   * If `createVersion` is `true`, another property `versionType`, string, must be either "Minor" or "Major" (defaults to `Minor`).
@@ -422,6 +423,21 @@ On top of the properties above, a few limits are hardcoded because they protect 
 That last one matters more than it looks. The cost of rendering a page is driven by the **page geometry**, which comes from the file — and the PDF format allows a 200 x 200 inches page in a file of a few hundred bytes. Asking for a 256 px thumbnail of such a page used to make PDFBox allocate several hundred megabytes, or simply run out of memory, so a tiny file was enough to bring a server down.
 
 The plugin now derives the rendering scale from the **requested output size**, using the dpi only as an upper bound: a page larger than the target is rendered smaller than the dpi asks for. Normal page sizes are unaffected — a Letter or A4 page still renders exactly as before — and large-format documents (plans, posters, maps) simply became much faster.
+
+<br />
+
+### Rendering sizes are snapped to a ladder
+
+`width`, `height` and `dpi` are **snapped down** to the closest of these values:
+
+* sizes: `120`, `256`, `512`, `1024`, `2000`
+* dpi: `72`, `150`, `300`
+
+So asking for `width=700` renders at 512, and `dpi=110` renders at 72. Values below the first step use it as a floor, values above the last one are capped there.
+
+This is a safety measure, not a tuning one. The rendering parameters are part of the cache key, so accepting arbitrary values means that varying a query string one pixel at a time (`?w=1`, `?w=2`, `?w=3`…) forces an unbounded number of chunk renderings, each of which opens the PDF, rasterizes up to 50 pages and writes them to a cache that then thrashes. Snapping bounds the distinct renderings of one document to 5 x 5 x 3.
+
+Pick a value from the ladder when you set `thumbnailWidth` / `thumbnailHeight` / `thumbnailDpi` on the element or `width` / `height` / `dpi` on an operation, otherwise you pay for the step below the one you expected.
 
 <br />
 

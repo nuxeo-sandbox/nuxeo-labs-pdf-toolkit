@@ -24,6 +24,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.File;
+import java.util.function.Consumer;
 
 import org.junit.Before;
 import org.junit.Rule;
@@ -31,9 +32,16 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.nuxeo.common.utils.FileUtils;
 import org.nuxeo.ecm.core.api.Blob;
+import org.nuxeo.ecm.core.api.Blobs;
 import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
+import org.nuxeo.ecm.core.api.IdRef;
 import org.nuxeo.ecm.core.api.impl.blob.FileBlob;
+import org.nuxeo.ecm.core.api.security.ACE;
+import org.nuxeo.ecm.core.api.security.ACL;
+import org.nuxeo.ecm.core.api.security.ACP;
+import org.nuxeo.ecm.core.api.security.SecurityConstants;
+import org.nuxeo.ecm.platform.usermanager.UserManager;
 import org.nuxeo.ecm.webengine.test.WebEngineFeature;
 import org.nuxeo.http.test.HttpClientTestRule;
 import org.nuxeo.http.test.handler.HttpStatusCodeHandler;
@@ -76,11 +84,38 @@ public class TestPDFToolkitEndpoint {
     @Inject
     protected ServletContainerFeature servletContainerFeature;
 
+    @Inject
+    protected UserManager userManager;
+
+    /** A user that exists but is explicitly denied Read on the test document. */
+    public static final String NO_ACCESS_USER = "no-access-user";
+
     @Rule
     public final HttpClientTestRule httpClient = HttpClientTestRule.builder()
                                                                    .url(() -> servletContainerFeature.getHttpUrl())
                                                                    .adminCredentials()
                                                                    .build();
+
+    /**
+     * Run {@code action} with a client authenticated as {@link #NO_ACCESS_USER}.
+     * <p>
+     * Built by hand rather than declared as a second {@code @Rule}: FeaturesRunner binds every rule
+     * into Guice by type, so two {@code HttpClientTestRule} fields fail the injector with
+     * "bound multiple times".
+     */
+    protected void asUserWithoutAccess(Consumer<HttpClientTestRule> action) {
+
+        HttpClientTestRule client = HttpClientTestRule.builder()
+                                                      .url(() -> servletContainerFeature.getHttpUrl())
+                                                      .credentials(NO_ACCESS_USER, NO_ACCESS_USER)
+                                                      .build();
+        client.starting();
+        try {
+            action.accept(client);
+        } finally {
+            client.finished();
+        }
+    }
 
     protected String docId;
 
@@ -98,6 +133,43 @@ public class TestPDFToolkitEndpoint {
         doc = session.getDocument(doc.getRef());
         docId = doc.getId();
         contentToken = ((Blob) doc.getPropertyValue("file:content")).getDigest();
+    }
+
+    @Before
+    public void createUserWithoutAccess() {
+        if (userManager.getPrincipal(NO_ACCESS_USER) == null) {
+            DocumentModel user = userManager.getBareUserModel();
+            user.setPropertyValue("user:username", NO_ACCESS_USER);
+            user.setPropertyValue("user:password", NO_ACCESS_USER);
+            userManager.createUser(user);
+        }
+    }
+
+    /**
+     * Make the test document unreadable by {@link #NO_ACCESS_USER}, whatever the default ACP of the
+     * test repository is.
+     * <p>
+     * Uses the canonical "block inheritance" ACE rather than a Read deny: the repository refuses a
+     * negative ACL unless it is Everyone/Everything or Write. Administrators bypass ACLs, so the admin
+     * client keeps working.
+     */
+    protected void blockAccessToTestDoc() {
+        DocumentModel doc = session.getDocument(new IdRef(docId));
+        ACP acp = doc.getACP();
+        ACL acl = acp.getOrCreateACL(ACL.LOCAL_ACL);
+        acl.add(new ACE(SecurityConstants.EVERYONE, SecurityConstants.EVERYTHING, false));
+        session.setACP(doc.getRef(), acp, true);
+        session.save();
+        txFeature.nextTransaction();
+    }
+
+    /**
+     * The document must not be served. Both 403 and 404 are correct: the repository answers 404 for a
+     * document the user cannot even browse, which is the better of the two since it does not disclose
+     * that the document exists. What matters is that it is never a 200.
+     */
+    protected void assertRefused(String message, Integer status) {
+        assertTrue(message + " (got " + status + ")", status == 403 || status == 404);
     }
 
     protected String thumbPath(int pageNum) {
@@ -212,6 +284,67 @@ public class TestPDFToolkitEndpoint {
     public void shouldReturn404OnUnknownDocument() {
         httpClient.buildGetRequest("/pdftoolkit/thumb/not-a-document-id/1")
                   .executeAndConsume(new HttpStatusCodeHandler(), status -> assertEquals(404, status.intValue()));
+    }
+
+    /**
+     * The one security promise of this endpoint: it resolves the document through the <b>current user
+     * session</b>, so the repository enforces the read permission. Nothing else protects it — there is
+     * no guard on the WebObject — so an "optimisation" resolving through a system session would open
+     * every PDF of the repository to everyone. Hence this test.
+     */
+    @Test
+    public void shouldRefuseAThumbnailToAUserWithoutRead() {
+
+        blockAccessToTestDoc();
+
+        asUserWithoutAccess(client -> client.buildGetRequest(thumbPath(1))
+                                            .executeAndConsume(new HttpStatusCodeHandler(),
+                                                    status -> assertRefused(
+                                                            "A user without Read must not get a thumbnail", status)));
+    }
+
+    /** Warming the cache as an administrator must not make the images readable by everyone. */
+    @Test
+    public void shouldRefuseAThumbnailFromTheCacheToAUserWithoutRead() {
+
+        // Fill the cache first, as admin
+        httpClient.buildGetRequest(thumbPath(1))
+                  .executeAndConsume(new HttpStatusCodeHandler(), status -> assertEquals(200, status.intValue()));
+
+        blockAccessToTestDoc();
+
+        asUserWithoutAccess(client -> client.buildGetRequest(thumbPath(1))
+                                            .executeAndConsume(new HttpStatusCodeHandler(),
+                                                    status -> assertRefused(
+                                                            "The cache is not an authorization bypass", status)));
+    }
+
+    /**
+     * A blob that is not a PDF is a client error, not a server fault. It used to be a 500, so a chunk
+     * of 50 tiles produced 50 stack traces in server.log.
+     */
+    @Test
+    public void shouldReturn400OnANonPdfBlob() {
+
+        DocumentModel doc = session.createDocumentModel("/", "notAPdf", "File");
+        doc.setPropertyValue("file:content", (java.io.Serializable) Blobs.createBlob("I am not a PDF", "text/plain"));
+        doc = session.createDocument(doc);
+        session.save();
+        txFeature.nextTransaction();
+
+        httpClient.buildGetRequest("/pdftoolkit/thumb/" + doc.getId() + "/1")
+                  .executeAndConsume(new HttpStatusCodeHandler(), status -> assertEquals(400, status.intValue()));
+    }
+
+    @Test
+    public void shouldReturn400OnADocumentWithoutBlob() {
+
+        DocumentModel doc = session.createDocument(session.createDocumentModel("/", "empty", "File"));
+        session.save();
+        txFeature.nextTransaction();
+
+        httpClient.buildGetRequest("/pdftoolkit/thumb/" + doc.getId() + "/1")
+                  .executeAndConsume(new HttpStatusCodeHandler(), status -> assertEquals(400, status.intValue()));
     }
 
     @Test

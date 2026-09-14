@@ -25,6 +25,7 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.CacheControl;
 import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.EntityTag;
@@ -40,7 +41,6 @@ import org.nuxeo.ecm.core.api.DocumentModel;
 import org.nuxeo.ecm.core.api.IdRef;
 import org.nuxeo.ecm.core.api.NuxeoException;
 import org.nuxeo.ecm.webengine.model.WebObject;
-import org.nuxeo.ecm.webengine.model.exceptions.WebResourceNotFoundException;
 import org.nuxeo.ecm.webengine.model.impl.ModuleRoot;
 
 import nuxeo.labs.pdf.toolkit.PDFToImages;
@@ -97,10 +97,25 @@ public class PDFToolkitEndpoint extends ModuleRoot {
         // Resolving through the user session is what enforces the permissions: no read, no thumbnail.
         DocumentModel doc = session.getDocument(new IdRef(docId));
 
-        PDFToImages pdfToImages = new PDFToImages(doc, xpath);
+        /*
+         * Everything this constructor refuses is a client error: no blob at that xpath, a property that
+         * does not exist or is not a blob, a blob that is not a PDF or is too big. NuxeoException
+         * defaults to a 500, which would log a stack trace per tile — 50 of them for one chunk — and
+         * report a server fault for a perfectly well understood bad request.
+         */
+        PDFToImages pdfToImages;
+        try {
+            pdfToImages = new PDFToImages(doc, xpath);
+        } catch (NuxeoException e) {
+            throw error(Response.Status.BAD_REQUEST,
+                    "Cannot render a thumbnail of document " + docId + ": " + e.getMessage());
+        }
+
         /*
          * Go through the setters so the very same bounds as the operation apply: the rendering
          * parameters are in the URL, they cannot be trusted any more than an operation parameter.
+         * They are snapped to a ladder, exactly as PDFLabs.PrepareThumbnails does when it builds the
+         * URL, so both sides land on the same cache key.
          */
         if (width != null || height != null) {
             pdfToImages.setSize(width == null ? PDFToImages.DEFAULT_THUMBNAIL_SIZE : width,
@@ -134,8 +149,8 @@ public class PDFToolkitEndpoint extends ModuleRoot {
         try {
             thumbnail = pdfToImages.getThumbnail(pageNum);
         } catch (IllegalArgumentException e) {
-            throw new WebResourceNotFoundException(
-                    "No page " + pageNum + " in document " + docId + ": " + e.getMessage(), e);
+            throw error(Response.Status.NOT_FOUND, "No page " + pageNum + " in document " + docId + ": "
+                    + e.getMessage());
         }
 
         /*
@@ -176,6 +191,25 @@ public class PDFToolkitEndpoint extends ModuleRoot {
             cc.setNoCache(true);
         }
         return cc;
+    }
+
+    /**
+     * Build an error response with an <b>explicit</b> media type.
+     * <p>
+     * Never throw a bare {@code NuxeoException} subclass from this resource expecting the platform to
+     * map it. This method declares {@code @Produces("image/jpeg")}, so JAX-RS looks for a
+     * {@code MessageBodyWriter} able to serialize the <i>exception</i> as {@code image/jpeg}, finds
+     * none, and the failure cascades: the real status is lost and the client gets a
+     * {@code 404 jakarta.ws.rs.NotFoundException} with a stack trace in the logs, whatever the status
+     * the exception carried. Same family of trap as returning a {@code Blob} and losing the headers —
+     * on an endpoint that produces binary, the error path needs its own content type.
+     *
+     * @since 2025.8
+     */
+    protected WebApplicationException error(Response.Status status, String message) {
+
+        return new WebApplicationException(
+                Response.status(status).type(MediaType.TEXT_PLAIN).entity(message).build());
     }
 
 }

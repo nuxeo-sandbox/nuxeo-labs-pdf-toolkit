@@ -47,10 +47,17 @@ import org.nuxeo.ecm.automation.AutomationService;
 import org.nuxeo.ecm.automation.OperationContext;
 import org.nuxeo.ecm.automation.test.AutomationFeature;
 import org.nuxeo.ecm.core.api.Blob;
+import org.nuxeo.ecm.core.api.CoreInstance;
 import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
+import org.nuxeo.ecm.core.api.DocumentSecurityException;
 import org.nuxeo.ecm.core.api.IdRef;
 import org.nuxeo.ecm.core.api.impl.blob.FileBlob;
+import org.nuxeo.ecm.core.api.security.ACE;
+import org.nuxeo.ecm.core.api.security.ACL;
+import org.nuxeo.ecm.core.api.security.ACP;
+import org.nuxeo.ecm.core.api.security.SecurityConstants;
+import org.nuxeo.ecm.platform.usermanager.UserManager;
 import org.nuxeo.ecm.core.test.DefaultRepositoryInit;
 import org.nuxeo.ecm.core.test.annotations.Granularity;
 import org.nuxeo.ecm.core.test.annotations.RepositoryConfig;
@@ -451,5 +458,125 @@ public class TestOperationsDestinations {
 
         doc = session.getDocument(doc.getRef());
         checkNumberOfPages((Blob) doc.getPropertyValue("file:content"), 4);
+    }
+
+    /**
+     * isList() is also true for dc:subjects and every other multivalued scalar. DocumentHelper.addBlob()
+     * then reaches p.addValue(blob) and fails deep in the property model, with a message naming neither
+     * the destination nor the xpath.
+     */
+    @Test
+    public void shouldRefuseAttachmentsOnAListThatDoesNotHoldBlobs() throws Exception {
+
+        DocumentModel doc = createTestDoc();
+
+        JSONObject destinationObj = new JSONObject();
+        destinationObj.put("destination", "attachments");
+        JSONObject details = new JSONObject();
+        details.put("xpath", "dc:subjects");
+        destinationObj.put("details", details);
+
+        try {
+            runExtract(doc, destinationObj.toString());
+            fail("Should have refused a list that does not hold blobs");
+        } catch (Exception e) {
+            assertFailureMentions(e, "requires a list of blobs");
+        }
+
+        checkOriginalNotModified(doc);
+    }
+
+    // ========================================
+    // Permissions
+    //
+    // The destinations rely entirely on the repository refusing the write: the Web UI hides them, but
+    // hiding is not enforcing, and the comment in _computeCanWrite explicitly makes the server the
+    // authority. Nothing tested that until now.
+    // ========================================
+    public static final String READ_ONLY_USER = "read-only-user";
+
+    @Inject
+    protected UserManager userManager;
+
+    protected DocumentModel createTestDocReadableBy(String username) {
+
+        DocumentModel doc = createTestDoc();
+
+        ACP acp = doc.getACP();
+        ACL acl = acp.getOrCreateACL(ACL.LOCAL_ACL);
+        acl.add(new ACE(username, SecurityConstants.READ, true));
+        // Negative ACLs are refused except for Write, which is exactly what we need here
+        acl.add(new ACE(username, SecurityConstants.WRITE, false));
+        session.setACP(doc.getRef(), acp, true);
+        session.save();
+        txFeature.nextTransaction();
+
+        if (userManager.getPrincipal(username) == null) {
+            DocumentModel user = userManager.getBareUserModel();
+            user.setPropertyValue("user:username", username);
+            user.setPropertyValue("user:password", username);
+            userManager.createUser(user);
+        }
+
+        return session.getDocument(doc.getRef());
+    }
+
+    protected void assertDestinationRefusedForReadOnlyUser(String destinationJson) throws Exception {
+
+        DocumentModel doc = createTestDocReadableBy(READ_ONLY_USER);
+
+        CoreSession userSession = CoreInstance.getCoreSession(session.getRepositoryName(), READ_ONLY_USER);
+        OperationContext ctx = new OperationContext(userSession);
+        ctx.setInput(userSession.getDocument(doc.getRef()));
+        Map<String, Object> params = new HashMap<>();
+        params.put("pageRange", "2-4");
+        params.put("destinationJsonStr", destinationJson);
+
+        try {
+            automationService.run(ctx, PDFPageExtractorOp.ID, params);
+            fail("A user without Write must not be able to use destination " + destinationJson);
+        } catch (Exception e) {
+            // DocumentSecurityException somewhere in the chain, whatever Automation wrapped it in
+            Throwable current = e;
+            boolean denied = false;
+            while (current != null) {
+                if (current instanceof DocumentSecurityException) {
+                    denied = true;
+                    break;
+                }
+                current = current.getCause();
+            }
+            assertTrue("Expected a security denial, got: " + e, denied);
+        }
+
+        checkOriginalNotModified(doc);
+    }
+
+    @Test
+    public void shouldRefuseNewFileToAUserWithoutWrite() throws Exception {
+        assertDestinationRefusedForReadOnlyUser("{\"destination\":\"newFile\"}");
+    }
+
+    @Test
+    public void shouldRefuseAttachmentsToAUserWithoutWrite() throws Exception {
+        assertDestinationRefusedForReadOnlyUser("{\"destination\":\"attachments\"}");
+    }
+
+    /** Download is legitimate for a read-only user: it does not touch the repository. */
+    @Test
+    public void shouldStillAllowDownloadToAUserWithoutWrite() throws Exception {
+
+        DocumentModel doc = createTestDocReadableBy(READ_ONLY_USER);
+
+        CoreSession userSession = CoreInstance.getCoreSession(session.getRepositoryName(), READ_ONLY_USER);
+        OperationContext ctx = new OperationContext(userSession);
+        ctx.setInput(userSession.getDocument(doc.getRef()));
+        Map<String, Object> params = new HashMap<>();
+        params.put("pageRange", "2-4");
+
+        Blob result = (Blob) automationService.run(ctx, PDFPageExtractorOp.ID, params);
+        checkNumberOfPages(result, 3);
+
+        checkOriginalNotModified(doc);
     }
 }

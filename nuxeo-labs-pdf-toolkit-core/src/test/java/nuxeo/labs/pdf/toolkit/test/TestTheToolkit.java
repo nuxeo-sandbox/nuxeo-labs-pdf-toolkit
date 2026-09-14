@@ -846,6 +846,110 @@ public class TestTheToolkit {
             assertTrue("The message must name the property to raise", message.contains(
                     PDFToImages.THUMBNAILS_MAX_PAGES_PROPERTY));
         }
+
+        /*
+         * And nothing was rendered: the limit used to be checked on the way out, so every refused call
+         * still paid for a full chunk. A cache entry here would mean the pages were rendered anyway.
+         */
+        assertTrue("The limit must be enforced before rendering, not after", cacheKeys().isEmpty());
+    }
+
+    /**
+     * PrepareThumbnails and GetThumbnails share the chunk cache, so a document browsed in the dialog
+     * used to leave GetThumbnails able to serve it whole, well above its own documented limit.
+     */
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.MAX_PAGES_PROPERTY, value = "5")
+    public void shouldEnforceMaxPagesEvenOnACacheHit() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        // Warm every chunk the way the dialog does, which is not subject to this limit
+        PDFToImages warm = new PDFToImages(b);
+        warm.prepareChunk(1);
+        assertFalse(cacheKeys().isEmpty());
+
+        try {
+            new PDFToImages(b).createThumbnails();
+            fail("Should have refused the document on the cache hit path too");
+        } catch (NuxeoException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains("pages limit for thumbnails rendering"));
+        }
+    }
+
+    // ========================================
+    // Rendering parameters are snapped to a ladder
+    // ========================================
+
+    /**
+     * The rendering parameters are part of the cache key, so accepting arbitrary values lets anyone
+     * force an unbounded number of chunk renderings by varying a query string. Snapping bounds the
+     * distinct renderings of a document to |sizes|² x |dpis|.
+     */
+    @Test
+    public void shouldSnapRenderingParametersToTheLadder() throws Exception {
+
+        PDFToImages tool = new PDFToImages(createTestDocBlob());
+
+        tool.setSize(700, 700);
+        assertEquals("Snapped down, never up", 512, tool.getWidth());
+        assertEquals(512, tool.getHeight());
+
+        tool.setSize(120, 120);
+        assertEquals(120, tool.getWidth());
+
+        // Below the first step: the first step is the floor
+        tool.setSize(10, 10);
+        assertEquals(PDFToImages.THUMBNAIL_SIZE_LADDER[0], tool.getWidth());
+
+        // Above the last step: the ladder is also the upper bound
+        tool.setSize(99999, 99999);
+        assertEquals(PDFToImages.MAX_THUMBNAIL_SIZE, tool.getWidth());
+
+        tool.setDpi(299);
+        assertEquals(PDFToImages.DEFAULT_DPI, tool.getDpi());
+        tool.setDpi(99999);
+        assertEquals(PDFToImages.MAX_DPI, tool.getDpi());
+        tool.setDpi(1);
+        assertEquals(PDFToImages.DPI_LADDER[0], tool.getDpi());
+    }
+
+    @Test
+    public void shouldNotMultiplyCacheEntriesForNearbySizes() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        // Three sizes an attacker would vary one pixel at a time: all land on the same ladder step
+        for (int size : new int[] { 520, 600, 700 }) {
+            PDFToImages tool = new PDFToImages(b);
+            tool.setSize(size, size);
+            tool.prepareChunk(1);
+        }
+
+        assertEquals("Nearby sizes must share one cache entry", 1, cacheKeys().size());
+    }
+
+    /**
+     * The URL must carry the EFFECTIVE parameters. Emitting the raw ones would make the operation and
+     * the endpoint compute different cache keys, turning every image into an endpoint-fallback render.
+     */
+    @Test
+    public void shouldPutTheSnappedParametersInTheUrls() throws Exception {
+
+        DocumentModel doc = createTestDoc();
+
+        OperationContext ctx = new OperationContext(session);
+        ctx.setInput(doc);
+        Map<String, Object> params = new HashMap<>();
+        params.put("width", 700);
+        params.put("height", 700);
+        params.put("dpi", 299);
+        Blob result = (Blob) automationService.run(ctx, PDFPrepareThumbnailsOp.ID, params);
+
+        String first = new JSONObject(result.getString()).getJSONArray("urls").getString(0);
+        assertTrue("Expected the snapped width in " + first, first.contains("w=512"));
+        assertTrue(first.contains("h=512"));
+        assertTrue("Expected the snapped dpi in " + first, first.contains("dpi=150"));
     }
 
     @Test

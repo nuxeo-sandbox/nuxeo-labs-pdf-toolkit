@@ -30,7 +30,6 @@ import org.nuxeo.ecm.automation.core.annotations.Param;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.Blobs;
 import org.nuxeo.ecm.core.api.DocumentModel;
-import org.nuxeo.ecm.core.api.NuxeoException;
 
 import nuxeo.labs.pdf.toolkit.PDFToImages;
 
@@ -96,20 +95,16 @@ public class PDFPrepareThumbnailsOp {
         pdfToImages.setDpi(dpi);
         pdfToImages.setSize(width, height);
 
+        /*
+         * Rendering is bounded by the chunk, so this limit is not about the server: every page becomes
+         * a tile in the browser, and a few thousand tiles are enough to freeze a tab. It is set BEFORE
+         * the rendering, so an oversized document is refused without paying for a chunk first.
+         */
+        pdfToImages.setMaxPageCount(PDFToImages.getThumbnailsMaxPages());
+
         // Opens, parses and renders the PDF once for the whole chunk, then fills the cache the endpoint
         // reads from.
         PDFToImages.ThumbnailsChunk chunk = pdfToImages.prepareChunk(startPage == null ? 1 : startPage);
-
-        /*
-         * Rendering is bounded by the chunk, so this limit is not about the server: every page becomes a
-         * tile in the browser, and a few thousand tiles are enough to freeze a tab.
-         */
-        int maxPages = PDFToImages.getThumbnailsMaxPages();
-        if (chunk.pageCount() > maxPages) {
-            throw new NuxeoException("PDF of document " + doc.getId() + " has " + chunk.pageCount()
-                    + " pages, above the " + maxPages + " pages limit for the thumbnails UI. Raise "
-                    + PDFToImages.THUMBNAILS_MAX_PAGES_PROPERTY + " if your browser can afford it.");
-        }
 
         /*
          * The URL carries the document id, so replacing file:content would otherwise produce the very
@@ -118,11 +113,20 @@ public class PDFPrepareThumbnailsOp {
          */
         String contentToken = pdfToImages.getContentToken();
 
+        /*
+         * Emit the EFFECTIVE parameters, not the ones we were given: they are snapped to a ladder, and
+         * the endpoint snaps them again. Emitting the raw values would make the two compute different
+         * cache keys, turning every single image into an endpoint-fallback rendering.
+         */
+        int effectiveWidth = pdfToImages.getWidth();
+        int effectiveHeight = pdfToImages.getHeight();
+        int effectiveDpi = pdfToImages.getDpi();
+
         // Every page gets an URL, even those of the chunks that are not rendered yet: the caller needs
         // them to lay out its placeholders, and asking for one warms its chunk on the fly.
         JSONArray urls = new JSONArray();
         for (int pageNum = 1; pageNum <= chunk.pageCount(); pageNum++) {
-            urls.put(buildUrl(doc.getId(), pageNum, contentToken));
+            urls.put(buildUrl(doc.getId(), pageNum, contentToken, effectiveWidth, effectiveHeight, effectiveDpi));
         }
 
         JSONObject result = new JSONObject();
@@ -142,17 +146,19 @@ public class PDFPrepareThumbnailsOp {
         return Blobs.createJSONBlob(result.toString());
     }
 
-    protected String buildUrl(String docId, int pageNum, String contentToken) {
+    protected String buildUrl(String docId, int pageNum, String contentToken, int urlWidth, int urlHeight,
+            int urlDpi) {
 
-        StringBuilder url = new StringBuilder(THUMBNAIL_URL_PREFIX).append(docId)
+        StringBuilder url = new StringBuilder(THUMBNAIL_URL_PREFIX).append(
+                URLEncoder.encode(docId, StandardCharsets.UTF_8))
                                                                    .append('/')
                                                                    .append(pageNum)
                                                                    .append("?w=")
-                                                                   .append(width)
+                                                                   .append(urlWidth)
                                                                    .append("&h=")
-                                                                   .append(height)
+                                                                   .append(urlHeight)
                                                                    .append("&dpi=")
-                                                                   .append(dpi);
+                                                                   .append(urlDpi);
         if (contentToken != null) {
             url.append("&v=").append(URLEncoder.encode(contentToken, StandardCharsets.UTF_8));
         }

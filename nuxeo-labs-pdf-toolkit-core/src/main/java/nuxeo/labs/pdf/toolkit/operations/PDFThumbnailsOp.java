@@ -18,6 +18,9 @@
  */
 package nuxeo.labs.pdf.toolkit.operations;
 
+import java.io.IOException;
+import java.util.Base64;
+
 import org.json.JSONArray;
 import org.nuxeo.ecm.automation.core.Constants;
 import org.nuxeo.ecm.automation.core.annotations.Operation;
@@ -52,8 +55,15 @@ public class PDFThumbnailsOp {
 
     public static final String ID = "PDFLabs.GetThumbnails";
 
-    /** Safety net on top of the page count limit: the whole payload is built in memory. */
-    public static final long MAX_BASE64_PAYLOAD = 20L * 1024 * 1024;
+    /**
+     * Safety net on top of the page count limit: the whole payload is built in memory.
+     * <p>
+     * This bounds the <b>jpeg</b> bytes, and the peak heap is roughly four times that: the base64
+     * string is 1.33x the bytes, it is held in a JSONArray, {@code toString()} duplicates the whole
+     * thing, and {@code createJSONBlob} copies it again. 5 MB of jpeg is therefore already ~20 MB of
+     * heap per concurrent call.
+     */
+    public static final long MAX_BASE64_PAYLOAD = 5L * 1024 * 1024;
 
     @Param(name = "xpath", required = false)
     protected String xpath = "file:content";
@@ -81,13 +91,26 @@ public class PDFThumbnailsOp {
 
         BlobList thumbnails = pdfThumbnails.createThumbnails(width, height);
 
-        long totalBytes = thumbnails.stream().mapToLong(Blob::getLength).sum();
-        if (totalBytes > MAX_BASE64_PAYLOAD) {
-            throw new NuxeoException("Thumbnails payload would be " + totalBytes + " bytes, above the "
-                    + MAX_BASE64_PAYLOAD + " bytes limit. Lower the dpi and/or the thumbnail size.");
+        /*
+         * Encode incrementally and stop as soon as the budget is spent, rather than summing the file
+         * lengths first: the sum under-measured the real cost about fourfold, and it was computed
+         * after everything had already been encoded.
+         */
+        JSONArray array = new JSONArray();
+        long encoded = 0;
+        try {
+            for (Blob thumbnail : thumbnails) {
+                encoded += thumbnail.getLength();
+                if (encoded > MAX_BASE64_PAYLOAD) {
+                    throw new NuxeoException("Thumbnails payload exceeds the " + MAX_BASE64_PAYLOAD
+                            + " bytes limit at page " + (array.length() + 1)
+                            + ". Lower the dpi and/or the thumbnail size, or use PDFLabs.PrepareThumbnails.");
+                }
+                array.put(Base64.getEncoder().encodeToString(thumbnail.getByteArray()));
+            }
+        } catch (IOException e) {
+            throw new NuxeoException("Failed to base64-encode the thumbnails of \"" + blob.getFilename() + "\".", e);
         }
-
-        JSONArray array = PDFToImages.toBase64JSONArray(thumbnails);
 
         return Blobs.createJSONBlob(array.toString());
 

@@ -79,72 +79,85 @@ Displays a bigger preview of a single page, in its own dialog.
   </template>
 
   <script>
-    Polymer({
-      is: 'nuxeo-pdf-toolkit-preview',
-      behaviors: [Nuxeo.I18nBehavior],
-
-      properties: {
-        // Private properties.
-        _loadingPreview: Boolean,
-        _previewImageSrc: String
-      },
-
-      detached: function() {
-        this._revokePreviewUrl();
-      },
-
-      /**
-       * Public API to be called by the parent.
-       * The document parameter is named `doc` on purpose: naming it `document` would shadow the
-       * global document object for the whole function.
+    (function() {
+      /*
+       * 1x1 transparent GIF. An <img> must never carry an empty src: several browsers resolve src=""
+       * to the current document URL and re-request the whole page. Same constant, same reason, as in
+       * nuxeo-pdf-toolkit-thumbnails.html.
        */
-      loadPreviewPage: function(doc, page) {
-        if (!doc || !page || page <= 0) {
-          return;
+      var BLANK_IMAGE = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+
+      Polymer({
+        is: 'nuxeo-pdf-toolkit-preview',
+        behaviors: [Nuxeo.I18nBehavior],
+
+        properties: {
+          // Private properties.
+          _loadingPreview: Boolean,
+          _previewImageSrc: {
+            type: String,
+            value: BLANK_IMAGE
+          }
+        },
+
+        detached: function() {
+          this._revokePreviewUrl();
+        },
+
+        /**
+         * Public API to be called by the parent.
+         * The document parameter is named `doc` on purpose: naming it `document` would shadow the
+         * global document object for the whole function.
+         */
+        loadPreviewPage: function(doc, page) {
+          if (!doc || !page || page <= 0) {
+            return;
+          }
+
+          // Release the previous preview before loading a new one, otherwise its blob leaks
+          this._revokePreviewUrl();
+          this.set('_loadingPreview', true);
+          this.$.previewDialog.open();
+
+          var op = this.$.jpegPreviewOp;
+          op.input = doc;
+          op.params = { pageNumber: page };
+
+          op.execute()
+            .then(function(response) {
+              return response.blob();
+            })
+            .then(function(blob) {
+              this.set('_previewImageSrc', URL.createObjectURL(blob));
+              this.set('_loadingPreview', false);
+            }.bind(this))
+            .catch(function(error) {
+              console.error(error);
+              this.set('_loadingPreview', false);
+              this.fire('notify', { message: this.i18n('pdftoolkit.error.previewFailed') });
+              this.$.previewDialog.close();
+            }.bind(this));
+        },
+
+        _revokePreviewUrl: function() {
+          if (this._previewImageSrc && this._previewImageSrc.indexOf('blob:') === 0) {
+            URL.revokeObjectURL(this._previewImageSrc);
+          }
+          // Back to the transparent pixel, never to an empty src
+          this.set('_previewImageSrc', BLANK_IMAGE);
+        },
+
+        // Covers the close button, ESC and a backdrop click alike
+        _onPreviewClosed: function() {
+          this._revokePreviewUrl();
+        },
+
+        _closePreviewDialog: function() {
+          // _onPreviewClosed does the cleanup
+          this.$.previewDialog.close();
         }
 
-        // Release the previous preview before loading a new one, otherwise its blob leaks
-        this._revokePreviewUrl();
-        this.set('_loadingPreview', true);
-        this.$.previewDialog.open();
-
-        var op = this.$.jpegPreviewOp;
-        op.input = doc;
-        op.params = { pageNumber: page };
-
-        op.execute()
-          .then(function(response) {
-            return response.blob();
-          })
-          .then(function(blob) {
-            this.set('_previewImageSrc', URL.createObjectURL(blob));
-            this.set('_loadingPreview', false);
-          }.bind(this))
-          .catch(function(error) {
-            console.error(error);
-            this.set('_loadingPreview', false);
-            this.fire('notify', { message: this.i18n('pdftoolkit.error.previewFailed') });
-            this.$.previewDialog.close();
-          }.bind(this));
-      },
-
-      _revokePreviewUrl: function() {
-        if (this._previewImageSrc && this._previewImageSrc.indexOf('blob:') === 0) {
-          URL.revokeObjectURL(this._previewImageSrc);
-        }
-        this.set('_previewImageSrc', '');
-      },
-
-      // Covers the close button, ESC and a backdrop click alike
-      _onPreviewClosed: function() {
-        this._revokePreviewUrl();
-      },
-
-      _closePreviewDialog: function() {
-        // _onPreviewClosed does the cleanup
-        this.$.previewDialog.close();
-      }
-
-    });
+      });
+    })();
   </script>
 </dom-module>

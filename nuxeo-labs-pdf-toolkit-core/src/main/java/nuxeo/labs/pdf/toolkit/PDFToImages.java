@@ -129,6 +129,31 @@ public class PDFToImages {
     public static final long MAX_RENDERED_PIXELS = 40_000_000L;
 
     /**
+     * Thumbnail sides, in pixels, the plugin actually renders at.
+     * <p>
+     * The rendering parameters are part of the cache key, so accepting arbitrary values means an
+     * attacker can force an unbounded number of chunk renderings just by varying a query string —
+     * {@code ?w=1}, {@code ?w=2}, {@code ?w=3}… Each one opens the PDF, renders a whole chunk and
+     * writes it to the cache, which then thrashes. Snapping bounds the distinct renderings of one
+     * document to {@code |THUMBNAIL_SIZE_LADDER|² x |DPI_LADDER|}.
+     * <p>
+     * Values are snapped <b>down</b>, so a rendering is never more expensive than the one asked for,
+     * and the smallest step is the floor. Must stay sorted ascending, and the last step is the
+     * effective maximum — keep it aligned with {@link #MAX_THUMBNAIL_SIZE}.
+     *
+     * @since 2025.8
+     */
+    public static final int[] THUMBNAIL_SIZE_LADDER = { 120, 256, 512, 1024, MAX_THUMBNAIL_SIZE };
+
+    /**
+     * Rendering resolutions the plugin actually renders at, see {@link #THUMBNAIL_SIZE_LADDER}.
+     * Sorted ascending, last step aligned with {@link #MAX_DPI}.
+     *
+     * @since 2025.8
+     */
+    public static final int[] DPI_LADDER = { 72, DEFAULT_DPI, MAX_DPI };
+
+    /**
      * Default maximum number of pages {@link #createThumbnails()} accepts to render.
      * <p>
      * The binding constraint is not the rendering itself but the base64 payload the thumbnails operation
@@ -309,6 +334,9 @@ public class PDFToImages {
 
     protected int dpi = DEFAULT_DPI;
 
+    /** Page count above which rendering is refused, 0 for no limit. @since 2025.8 */
+    protected int maxPageCount = 0;
+
     protected Blob pdfBlob;
 
     // ========================================
@@ -336,15 +364,64 @@ public class PDFToImages {
     // ========================================
     // Misc. ways to set the dimension
     // ========================================
+    /**
+     * Snap {@code value} down to the closest step of {@code ladder}, the first step acting as a floor.
+     * <p>
+     * The ladder is also the upper bound: its last step is the maximum this plugin renders at, so
+     * there is no separate clamping to do.
+     *
+     * @since 2025.8
+     */
+    protected static int snapDown(int value, int[] ladder) {
+
+        int snapped = ladder[0];
+        for (int step : ladder) {
+            if (step <= value) {
+                snapped = step;
+            }
+        }
+
+        return snapped;
+    }
+
     public void setWidth(int value) {
-        width = value > 0 ? Math.min(value, MAX_THUMBNAIL_SIZE) : DEFAULT_THUMBNAIL_SIZE;
+        width = value > 0 ? snapDown(value, THUMBNAIL_SIZE_LADDER) : DEFAULT_THUMBNAIL_SIZE;
     }
 
     /**
      * @since 2025.6
      */
     public void setHeight(int value) {
-        height = value > 0 ? Math.min(value, MAX_THUMBNAIL_SIZE) : DEFAULT_THUMBNAIL_SIZE;
+        height = value > 0 ? snapDown(value, THUMBNAIL_SIZE_LADDER) : DEFAULT_THUMBNAIL_SIZE;
+    }
+
+    /**
+     * The width actually used, once snapped. Callers building an URL <b>must</b> emit this rather
+     * than what they were given, otherwise the endpoint recomputes a different cache key and every
+     * image becomes an {@code endpoint-fallback} rendering.
+     *
+     * @since 2025.8
+     */
+    public int getWidth() {
+        return width;
+    }
+
+    /**
+     * The height actually used, see {@link #getWidth()}.
+     *
+     * @since 2025.8
+     */
+    public int getHeight() {
+        return height;
+    }
+
+    /**
+     * The resolution actually used, see {@link #getWidth()}.
+     *
+     * @since 2025.8
+     */
+    public int getDpi() {
+        return dpi;
     }
 
     /**
@@ -392,7 +469,37 @@ public class PDFToImages {
     }
 
     public void setDpi(int value) {
-        dpi = value > 0 ? Math.min(value, MAX_DPI) : DEFAULT_DPI;
+        dpi = value > 0 ? snapDown(value, DPI_LADDER) : DEFAULT_DPI;
+    }
+
+    /**
+     * Refuse to render a document holding more than {@code value} pages. 0 disables the check.
+     * <p>
+     * Set by {@code PDFLabs.PrepareThumbnails} so that the limit is enforced <b>before</b> the pages
+     * are rendered: checking it on the way out still paid for a full chunk on every call, which made
+     * {@code nuxeo.pdftoolkit.thumbnails.maxPages} useless as a server side protection.
+     *
+     * @since 2025.8
+     */
+    public void setMaxPageCount(int value) {
+        maxPageCount = Math.max(0, value);
+    }
+
+    /**
+     * Enforce {@link #setMaxPageCount(int)}.
+     * <p>
+     * Called from both the cold path (inside {@code renderChunk}, right after the page count is
+     * known and before anything is rendered) and the cache hit path.
+     *
+     * @since 2025.8
+     */
+    protected void checkPageCount(int pageCount) {
+
+        if (maxPageCount > 0 && pageCount > maxPageCount) {
+            throw new NuxeoException("PDF \"" + pdfBlob.getFilename() + "\" has " + pageCount + " pages, above the "
+                    + maxPageCount + " pages limit for the thumbnails UI. Raise " + THUMBNAILS_MAX_PAGES_PROPERTY
+                    + " if your browser can afford it.");
+        }
     }
 
     // ========================================
@@ -773,6 +880,7 @@ public class PDFToImages {
 
         ThumbnailsChunk cached = readChunkFromCache(store, cacheKey, chunkStart, chunkSize);
         if (cached != null) {
+            checkPageCount(cached.pageCount());
             log.debug("Thumbnails chunk cache hit for key {}.", cacheKey);
             return cached;
         }
@@ -790,6 +898,7 @@ public class PDFToImages {
             // The thread that held the lock before us may just have filled the entry.
             cached = readChunkFromCache(store, cacheKey, chunkStart, chunkSize);
             if (cached != null) {
+                checkPageCount(cached.pageCount());
                 log.debug("Thumbnails chunk cache hit for key {} after waiting for the render lock.", cacheKey);
                 return cached;
             }
@@ -816,6 +925,8 @@ public class PDFToImages {
                 PDDocument document = Loader.loadPDF(source.getFile())) {
 
             int pageCount = document.getNumberOfPages();
+            // Refuse before rendering anything: the limit must not cost a full chunk on every call.
+            checkPageCount(pageCount);
             if (chunkStart > pageCount) {
                 throw new IllegalArgumentException("Page " + chunkStart + " exceeds document page count " + pageCount
                         + " of \"" + pdfBlob.getFilename() + "\"");
@@ -899,12 +1010,7 @@ public class PDFToImages {
                 PDDocument document = Loader.loadPDF(source.getFile())) {
 
             int pageCount = document.getNumberOfPages();
-            int maxPages = getMaxPages();
-            if (pageCount > maxPages) {
-                throw new NuxeoException("PDF \"" + pdfBlob.getFilename() + "\" has " + pageCount
-                        + " pages, above the " + maxPages + " pages limit for thumbnails rendering. Raise "
-                        + MAX_PAGES_PROPERTY + " if your server can afford it.");
-            }
+            checkMaxPagesForFullRendering(pageCount);
 
             PDFRenderer renderer = new PDFRenderer(document);
             BlobList currentChunk = new BlobList();
@@ -949,6 +1055,21 @@ public class PDFToImages {
     }
 
     /**
+     * Enforce {@link #getMaxPages()}, the limit of {@code PDFLabs.GetThumbnails}.
+     *
+     * @since 2025.8
+     */
+    protected void checkMaxPagesForFullRendering(int pageCount) {
+
+        int maxPages = getMaxPages();
+        if (pageCount > maxPages) {
+            throw new NuxeoException("PDF \"" + pdfBlob.getFilename() + "\" has " + pageCount + " pages, above the "
+                    + maxPages + " pages limit for thumbnails rendering. Raise " + MAX_PAGES_PROPERTY
+                    + " if your server can afford it.");
+        }
+    }
+
+    /**
      * Rebuild the whole thumbnails list from the per-chunk cache entries, or {@code null} as soon as one
      * chunk is missing.
      *
@@ -970,6 +1091,13 @@ public class PDFToImages {
         if (pageCount < 1) {
             return null;
         }
+
+        /*
+         * The limit must hold on the cache hit path too. PrepareThumbnails and GetThumbnails share the
+         * chunk cache, so a document browsed in the dialog used to leave GetThumbnails able to serve it
+         * whole, well above its documented limit.
+         */
+        checkMaxPagesForFullRendering(pageCount);
 
         BlobList all = new BlobList();
         all.addAll(firstChunk);

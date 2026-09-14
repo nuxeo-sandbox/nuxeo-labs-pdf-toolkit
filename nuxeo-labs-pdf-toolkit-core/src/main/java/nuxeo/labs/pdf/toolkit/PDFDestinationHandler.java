@@ -41,6 +41,9 @@ import org.nuxeo.ecm.core.api.model.Property;
 import org.nuxeo.ecm.core.api.model.PropertyNotFoundException;
 import org.nuxeo.ecm.core.api.pathsegment.PathSegmentService;
 import org.nuxeo.ecm.core.api.versioning.VersioningService;
+import org.nuxeo.ecm.core.schema.types.ComplexType;
+import org.nuxeo.ecm.core.schema.types.ListType;
+import org.nuxeo.ecm.core.schema.types.Type;
 import org.nuxeo.runtime.api.Framework;
 
 /**
@@ -250,6 +253,17 @@ public class PDFDestinationHandler {
         if (!targetProperty.isList()) {
             throw new NuxeoException("Destination \"attachments\" requires a multivalued blob property, but \"" + xpath
                     + "\" is single-valued. Use destination \"newFile\" to replace a blob.");
+        }
+
+        /*
+         * isList() is also true for dc:subjects and every other multivalued scalar. DocumentHelper
+         * .addBlob() then reaches p.addValue(blob) and fails deep inside the property model, with a
+         * message naming neither the destination nor the xpath.
+         */
+        Type itemType = ((ListType) targetProperty.getType()).getFieldType();
+        if (!itemType.isComplexType() || !((ComplexType) itemType).hasField("file")) {
+            throw new NuxeoException("Destination \"attachments\" requires a list of blobs, but \"" + xpath
+                    + "\" holds " + itemType.getName() + ".");
         }
 
         DocumentHelper.addBlob(targetProperty, pdf);

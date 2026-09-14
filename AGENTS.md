@@ -27,7 +27,7 @@ mvn -pl nuxeo-labs-pdf-toolkit-core test -Dtest=TestOperationsDestinations#shoul
   `connect.nuxeo.com`. A cold `mvn clean install` also pulls the `nuxeo-nxr-server` zip for the
   `-package` module, which is large — prefer the `-pl ...-core` loop while iterating.
 - No CI, no formatter config, no lint step. `mvn clean install` is the whole gate.
-- 85 tests across 4 classes, all green, ~65 s. A failure is a real regression, not flakiness.
+- 100 tests across 4 classes, all green, ~70 s. A failure is a real regression, not flakiness.
 - `target/` may hold stale artifacts from an old `lts2023` build — never trust it without a
   `clean`. `nuxeo-labs-pdf-toolkit-core/bin/` is stale Eclipse output from before the
   `nuxeo.labs.pdf.tools` → `nuxeo.labs.pdf.toolkit` rename; it is gitignored, ignore it.
@@ -60,7 +60,10 @@ mvn -pl nuxeo-labs-pdf-toolkit-core test -Dtest=TestOperationsDestinations#shoul
   destination. Any new mutating operation should delegate to it rather than re-implementing a
   destination. Two non-obvious rules are enforced there and must stay:
   - `attachments` refuses a single-valued property, because `DocumentHelper.addBlob()`
-    silently falls back to `setValue()` and would **overwrite** the target blob.
+    silently falls back to `setValue()` and would **overwrite** the target blob. It also refuses a
+    multivalued property that does not hold blobs (`dc:subjects`): `isList()` is true there too, and
+    `addBlob()` then reaches `p.addValue(blob)` and fails deep in the property model, naming neither
+    the destination nor the xpath.
   - `derivative` runs the title through `PathSegmentService.generatePathSegment()` before
     passing it to `session.copy()`: the 3rd argument is the document **name**, and
     `PathRef.checkName()` rejects any name holding a `/`.
@@ -99,9 +102,29 @@ transport for the UI. `PDFLabs.GetThumbnails` is kept for blob inputs and script
 - The token is deliberately **not** used to select what is served: the endpoint always returns the
   current content of the document. It only drives the cache policy.
 - The endpoint resolves the document through `getContext().getCoreSession()`: the read permission
-  is enforced by the repository, not by us. Keep it that way.
+  is enforced by the repository, not by us. Keep it that way — it is the **only** thing protecting
+  this endpoint, there is no `guard` on the `@WebObject`. `shouldRefuseAThumbnailToAUserWithoutRead`
+  and `shouldRefuseAThumbnailFromTheCacheToAUserWithoutRead` guard it. Both accept 403 **or** 404:
+  the repository answers 404 for a document the user cannot browse, which is the better of the two.
+- **Never throw a bare `NuxeoException` subclass from the endpoint expecting the platform to map it.**
+  The method is `@Produces("image/jpeg")`, so JAX-RS looks for a `MessageBodyWriter` able to
+  serialize the *exception* as `image/jpeg`, finds none, and the failure cascades: the real status is
+  lost and the client gets `404 jakarta.ws.rs.NotFoundException` with a 500 in the logs — whatever
+  status the exception carried. Same family as the `BlobWriter` trap above: on an endpoint that
+  produces binary, the error path needs its own content type. Use `error(status, message)`, which
+  builds a `WebApplicationException` with an explicit `text/plain` entity.
 - Rendering parameters arrive in the query string, so they go through the same setters as the
-  operation and are clamped identically. An URL is no more trustable than an operation param.
+  operation and are clamped **and snapped** identically. An URL is no more trustable than an
+  operation param.
+- **`w`, `h` and `dpi` are snapped to a ladder** (`THUMBNAIL_SIZE_LADDER`, `DPI_LADDER`), down, with
+  the first step as a floor and the last as the cap. They are part of the cache key, so arbitrary
+  values let anyone force an unbounded number of chunk renderings by walking a query string one pixel
+  at a time — each one opening the PDF, rasterizing a whole chunk and thrashing the cache. Snapping
+  bounds the distinct renderings of a document to 5x5x3.
+  **`PDFPrepareThumbnailsOp` must emit the snapped values in the URL** (`getWidth()` / `getHeight()`
+  / `getDpi()`, never the raw `@Param`), otherwise the operation and the endpoint compute different
+  cache keys and every single image becomes an `endpoint-fallback` render.
+  `shouldPutTheSnappedParametersInTheUrls` and `shouldNotMultiplyCacheEntriesForNearbySizes` guard it.
 
 ### The chunk is the unit of work — never render a single page
 
@@ -119,6 +142,15 @@ simply threw above 150 pages.
   the key; the winner renders, the others re-check the cache after waiting. Striping rather than a
   map of per-key locks: nothing to remove, hence no leak and no race on the removal.
   `shouldRenderAChunkOnlyOnceUnderConcurrency` guards this.
+- **Page limits are enforced before rendering, and on the cache hit path too.** `setMaxPageCount()`
+  is called by `PrepareThumbnails` and checked inside `renderChunk` right after `getNumberOfPages()`,
+  before the loop — checking on the way out still paid for a full chunk on every refused call, which
+  made `nuxeo.pdftoolkit.thumbnails.maxPages` useless as a server side protection. Symmetrically,
+  `readAllChunksFromCache` calls `checkMaxPagesForFullRendering`: `GetThumbnails` and
+  `PrepareThumbnails` share the chunk cache, so a document browsed in the dialog used to leave
+  `GetThumbnails` able to serve it whole, well above its own documented limit.
+  `shouldRefusePdfAboveTheUiPageLimit` asserts the cache stays **empty**, which is what proves
+  nothing was rendered.
 - **The page count is cached with every chunk** (`putParameter(PAGE_COUNT_PARAM)`). Without it,
   answering "how many pages?" on a cache hit would reopen and reparse the PDF — on S3, download it
   again. Any new cache write must keep writing it, and `readChunkFromCache` rejects an entry that
@@ -203,7 +235,9 @@ Keep a factor ≥ 2, or the thumbnails get visibly worse.
 | `MAX_THUMBNAIL_SIZE` | 2000 | Same reason. |
 | `RENDER_SUPERSAMPLE` | 2 | Pixels rendered per pixel kept, on the longest side. Quality vs. memory. |
 | `MAX_RENDERED_PIXELS` | 40 M (~160 MB) | Absolute ceiling for one page, whatever the geometry, the dpi and the requested size. |
+| `THUMBNAIL_SIZE_LADDER` / `DPI_LADDER` | 120/256/512/1024/2000 and 72/150/300 | The only sizes rendered. Snapped **down**, first step is the floor, last step is the cap (so there is no separate clamping). Bounds the distinct cache keys, see the endpoint section. |
 | `DEFAULT_MAX_PAGES` | 150 | The thumbnails operation builds the whole base64 payload in memory, ~230 KB of heap per page. Applies to `GetThumbnails` only — **not** to `PrepareThumbnails`, which is bounded by the chunk, nor to extract/remove/reorder. |
+| `PDFThumbnailsOp.MAX_BASE64_PAYLOAD` | 5 MB | Of *jpeg* bytes. Peak heap is ~4x that: base64 is 1.33x, held in a `JSONArray`, `toString()` duplicates it, `createJSONBlob` copies again. Checked **while** encoding, not after: summing the blob lengths afterwards measured the wrong thing and had already paid for everything. |
 | `DEFAULT_THUMBNAILS_MAX_PAGES` | 2000 | Plafond of `PrepareThumbnails`. Not about the server (rendering is chunked) but about the browser: one tile per page, and a few thousand tiles freeze a tab. |
 | `PDFTools.MAX_PDF_SIZE` | 200 MB | PDFBox loads the document in memory. Checked in `checkIsProcessablePdf`. |
 | `PREVIEW_DPI` / `PREVIEW_PAGE_MAX_SIZE` | 300 / 2048 | Preview is rendered then resized by the `pictureResize` converter. Cache and return the **resized** blob, not the full-size one. Raise the cap, never the DPI: the 300 dpi render already holds more detail than the cap keeps, so the cap is free while the DPI costs quadratically. |
@@ -264,15 +298,20 @@ read the latter.
   - `TestOperationsWithDownload` — every operation but `PrepareThumbnails`, with the default
     `download` destination, plus the negative tests on page ranges and page orders.
   - `TestOperationsDestinations` — the 4 destinations, plus the negative tests on
-    `destinationJsonStr`. Always assert `checkOriginalNotModified()` when the operation is not
-    supposed to touch the source.
+    `destinationJsonStr`, plus the write permission tests (a read-only user must be refused
+    `newFile` and `attachments`, but still allowed to download). Always assert
+    `checkOriginalNotModified()` when the operation is not supposed to touch the source.
   - `TestTheToolkit` — caching, chunking, the render lock, rendering bounds, blob validation,
     single page thumbnail and `PDFLabs.PrepareThumbnails`, and the content token in the generated
     URLs. Chunk tests lower the chunk size to 3 with
     `@WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "3")` rather than
     introducing a second, bigger PDF fixture.
   - `TestPDFToolkitEndpoint` — the REST endpoint over HTTP, under `WebEngineFeature` (not
-    `AutomationFeature`: the two do not mix well in one class) with `HttpClientTestRule`.
+    `AutomationFeature`: the two do not mix well in one class) with `HttpClientTestRule`, plus the
+    read permission tests and the 4xx mapping. A **second `HttpClientTestRule` cannot be a
+    `@Rule`**: `FeaturesRunner` binds rules into Guice by type and two fields of the same type fail
+    the injector with "bound multiple times". Build it by hand and call `starting()`/`finished()`,
+    see `asUserWithoutAccess()`.
 - `TestTheToolkit` wipes the store in `@Before` via `((TransientStoreProvider) store).removeAll()`.
   Use `TransientStoreProvider`, **not** `AbstractTransientStore`: the default implementation is
   `KeyValueBlobTransientStore`, which does not extend it.
@@ -318,10 +357,16 @@ Polymer 2 / Web UI legacy elements under
     mirrors `FiltersBehavior.hasPermission` and **fails open** when the `permissions` enricher
     is missing (the server stays the authority).
   - `-preview.html` → owns its own `PDFLabs.JpegImagePreview` operation, and revokes its blob
-    URL on `iron-overlay-closed` so ESC and backdrop clicks do not leak.
+    URL on `iron-overlay-closed` so ESC and backdrop clicks do not leak. It resets `_previewImageSrc`
+    to the **transparent pixel**, never to `''` — same trap as the grid, an empty `src` makes some
+    browsers refetch the current page.
 - What this Web UI version does **not** provide, do not try to use it:
   - no `nuxeo-confirm-dialog` element — the destructive-action confirmation is a plain
-    `paper-dialog` in `nuxeo-pdf-toolkit.html`;
+    `paper-dialog` in `nuxeo-pdf-toolkit.html`. It guards **every** action whose destination is
+    `newFile`, not just Remove: extracting 3 pages out of a 100 pages contract and replacing the main
+    file destroys exactly as much. It is skipped when `createVersion` is on, since the user already
+    asked for a safety net. The i18n key is `pdftoolkit.confirm.replaceFile`;
+    `pdftoolkit.confirm.removePages` is kept as a deprecated alias for Studio overrides;
   - `Nuxeo.LayoutBehavior` is `[RoutingBehavior, FiltersBehavior, FormatBehavior]`, so there is
     no `this.notify()`. Use `this.fire('notify', { message: ... })`.
 - Nothing is transported as base64 any more: `_loadThumbnails()` calls `PDFLabs.PrepareThumbnails`
@@ -347,6 +392,11 @@ Polymer 2 / Web UI legacy elements under
     so does `applyChunk` (the viewport may span several chunks) and a window resize.
   - `<nuxeo-operation>` is a single shared element, so chunk calls are **serialized through
     `_chunkQueue`**; two overlapping calls would fight over `op.params`.
+  - Every chunk call captures `_chunkGeneration` and drops its response if it changed in the
+    meantime. `_resetChunkState()` bumps it, and `_closeDialog()` calls it: without that, closing the
+    dialog after a fast scroll kept rendering chunks nobody would look at, and a response for the
+    previous document could rebuild the grid from its URLs (`_onChunkReady` takes its "first chunk"
+    branch as soon as `_pageCount` is 0).
   - A tile with no image yet shows a transparent-pixel data URL, **never `src=""`**: an empty src
     makes some browsers refetch the current page.
 - **Never loop a `set()` over every page.** Selection helpers go through `_selectOnly()`, which
