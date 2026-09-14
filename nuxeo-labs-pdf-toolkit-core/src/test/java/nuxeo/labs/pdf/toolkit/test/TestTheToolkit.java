@@ -85,6 +85,7 @@ import org.nuxeo.runtime.transaction.TransactionHelper;
 
 import jakarta.inject.Inject;
 import nuxeo.labs.pdf.toolkit.PDFToImages;
+import nuxeo.labs.pdf.toolkit.PDFTools;
 import nuxeo.labs.pdf.toolkit.operations.PDFPageRemoverOp;
 import nuxeo.labs.pdf.toolkit.operations.PDFPrepareThumbnailsOp;
 
@@ -1120,5 +1121,77 @@ public class TestTheToolkit {
     @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "0")
     public void shouldIgnoreAZeroChunkSize() throws Exception {
         assertEquals(PDFToImages.DEFAULT_CHUNK_SIZE, PDFToImages.getChunkSize());
+    }
+
+    // ========================================
+    // Configuration ceilings: a typo must degrade, not kill
+    // ========================================
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "5000")
+    public void shouldCapAnAbsurdChunkSize() throws Exception {
+        // 5000 instead of 500 would make one request rasterize five thousand pages
+        assertEquals(PDFToImages.MAX_CONFIGURABLE_CHUNK_SIZE, PDFToImages.getChunkSize());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.THUMBNAILS_MAX_PAGES_PROPERTY, value = "2000000")
+    public void shouldCapAnAbsurdThumbnailsPageLimit() throws Exception {
+        assertEquals(PDFToImages.MAX_CONFIGURABLE_PAGES, PDFToImages.getThumbnailsMaxPages());
+    }
+
+    @Test
+    @WithFrameworkProperty(name = PDFToImages.CHUNK_SIZE_PROPERTY, value = "500")
+    public void shouldAcceptAValueRightAtTheCeiling() throws Exception {
+        assertEquals(500, PDFToImages.getChunkSize());
+    }
+
+    // ========================================
+    // Blob validation
+    // ========================================
+
+    /**
+     * Some blobs report -1 for an unknown length. "length > MAX_PDF_SIZE" is then false, so the cap
+     * silently did not apply — make sure such a blob is still accepted rather than rejected by
+     * accident, and that the check is explicit about it.
+     */
+    @Test
+    public void shouldAcceptABlobWithAnUnknownLength() throws Exception {
+
+        File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
+        Blob unknownLength = new FileBlob(f) {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public long getLength() {
+                return -1;
+            }
+        };
+        unknownLength.setMimeType("application/pdf");
+
+        // Must not throw
+        PDFTools.checkIsProcessablePdf(unknownLength);
+    }
+
+    @Test
+    public void shouldRejectAPdfAboveTheSizeCap() throws Exception {
+
+        File f = FileUtils.getResourceFileFromContext(TEST_PDF_PAH);
+        Blob tooBig = new FileBlob(f) {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public long getLength() {
+                return PDFTools.MAX_PDF_SIZE + 1;
+            }
+        };
+        tooBig.setMimeType("application/pdf");
+
+        try {
+            PDFTools.checkIsProcessablePdf(tooBig);
+            fail("Should have rejected a PDF above the size cap");
+        } catch (NuxeoException e) {
+            assertTrue(e.getMessage(), e.getMessage().contains("bytes limit supported by this plugin"));
+            assertEquals("A caller-fixable failure must be a 4xx", PDFTools.SC_BAD_REQUEST, e.getStatusCode());
+        }
     }
 }

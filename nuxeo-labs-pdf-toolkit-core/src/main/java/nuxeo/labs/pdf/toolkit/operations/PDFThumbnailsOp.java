@@ -102,7 +102,7 @@ public class PDFThumbnailsOp {
             for (Blob thumbnail : thumbnails) {
                 encoded += thumbnail.getLength();
                 if (encoded > MAX_BASE64_PAYLOAD) {
-                    throw new NuxeoException("Thumbnails payload exceeds the " + MAX_BASE64_PAYLOAD
+                    throw PDFTools.badRequest("Thumbnails payload exceeds the " + MAX_BASE64_PAYLOAD
                             + " bytes limit at page " + (array.length() + 1)
                             + ". Lower the dpi and/or the thumbnail size, or use PDFLabs.PrepareThumbnails.");
                 }

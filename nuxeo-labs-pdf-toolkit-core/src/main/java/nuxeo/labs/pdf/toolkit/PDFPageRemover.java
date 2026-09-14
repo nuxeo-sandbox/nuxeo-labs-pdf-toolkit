@@ -110,7 +110,7 @@ public class PDFPageRemover {
             return PDFTools.saveToFileBlob(pdfBlob, document, "pdf-after-removed-pages", "-pages-removed");
 
         } catch (InvalidPasswordException e) {
-            throw new NuxeoException(
+            throw PDFTools.badRequest(
                     "PDF \"" + pdfBlob.getFilename() + "\" is password-protected and cannot be processed.", e);
         } catch (IOException e) {
             throw new NuxeoException("Failed to remove pages from the PDF \"" + pdfBlob.getFilename() + "\".", e);

@@ -24,6 +24,8 @@ import java.util.TreeSet;
 
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.Blobs;
@@ -38,6 +40,8 @@ import org.nuxeo.ecm.core.api.model.PropertyNotFoundException;
  */
 public final class PDFTools {
 
+    private static final Logger log = LogManager.getLogger(PDFTools.class);
+
     /**
      * Largest PDF this plugin accepts to load. PDFBox loads the document in memory, so an unbounded
      * size means an unbounded heap usage.
@@ -45,6 +49,38 @@ public final class PDFTools {
      * @since 2025.6
      */
     public static final long MAX_PDF_SIZE = 200L * 1024 * 1024;
+
+    /**
+     * HTTP status carried by every failure caused by the request rather than by the server.
+     * <p>
+     * This is not cosmetic. Nuxeo <b>masks the message of a 5xx</b> before sending it to the browser
+     * (see {@code JsonWebengineWriter.getExceptionMessage}): the client receives a bare
+     * "Internal Server Error" unless the server runs in dev mode. An exception left at the default 500
+     * therefore loses its wording exactly when a user or a support engineer needs it — and these
+     * messages are the only diagnostic they get. Anything the caller can fix must be a 4xx.
+     *
+     * @since 2025.8
+     */
+    public static final int SC_BAD_REQUEST = 400;
+
+    /**
+     * A failure the caller can fix: a bad parameter, a document without a blob, a blob that is not a
+     * PDF. See {@link #SC_BAD_REQUEST} for why the status matters.
+     *
+     * @since 2025.8
+     */
+    public static NuxeoException badRequest(String message) {
+        return new NuxeoException(message, SC_BAD_REQUEST);
+    }
+
+    /**
+     * Same as {@link #badRequest(String)}, keeping the original cause.
+     *
+     * @since 2025.8
+     */
+    public static NuxeoException badRequest(String message, Throwable cause) {
+        return new NuxeoException(message, cause, SC_BAD_REQUEST);
+    }
 
     private PDFTools() {
         // Utility class, not meant to be instantiated.
@@ -66,7 +102,7 @@ public final class PDFTools {
     public static Blob getBlobFromDocument(DocumentModel doc, String xpath) {
 
         if (doc == null) {
-            throw new NuxeoException("No document provided.");
+            throw badRequest("No document provided.");
         }
 
         String path = StringUtils.isBlank(xpath) ? "file:content" : xpath;
@@ -75,14 +111,14 @@ public final class PDFTools {
         try {
             value = doc.getPropertyValue(path);
         } catch (PropertyNotFoundException e) {
-            throw new NuxeoException("Property \"" + path + "\" does not exist on document " + doc.getId() + ".", e);
+            throw badRequest("Property \"" + path + "\" does not exist on document " + doc.getId() + ".", e);
         }
 
         if (value == null) {
-            throw new NuxeoException("Document " + doc.getId() + " has no blob in \"" + path + "\".");
+            throw badRequest("Document " + doc.getId() + " has no blob in \"" + path + "\".");
         }
         if (!(value instanceof Blob blob)) {
-            throw new NuxeoException("Property \"" + path + "\" on document " + doc.getId() + " is not a blob (found "
+            throw badRequest("Property \"" + path + "\" on document " + doc.getId() + " is not a blob (found "
                     + value.getClass().getSimpleName() + ").");
         }
 
@@ -101,18 +137,25 @@ public final class PDFTools {
     public static void checkIsProcessablePdf(Blob blob) {
 
         if (blob == null) {
-            throw new NuxeoException("No blob provided.");
+            throw badRequest("No blob provided.");
         }
 
         String mimeType = blob.getMimeType();
         if (StringUtils.isNotBlank(mimeType) && !"application/pdf".equalsIgnoreCase(mimeType)) {
-            throw new NuxeoException(
-                    "Blob \"" + blob.getFilename() + "\" is not a PDF (mime-type: " + mimeType + ").");
+            throw badRequest("Blob \"" + blob.getFilename() + "\" is not a PDF (mime-type: " + mimeType + ").");
         }
 
         long length = blob.getLength();
-        if (length > MAX_PDF_SIZE) {
-            throw new NuxeoException("PDF \"" + blob.getFilename() + "\" is " + length + " bytes, above the "
+        /*
+         * A blob may report -1 when its length is unknown (a streamed blob, a managed blob whose
+         * metadata is not resolved yet). "length > MAX_PDF_SIZE" is then false and the cap silently
+         * does not apply, so be explicit about it rather than leaving it to a sign.
+         */
+        if (length < 0) {
+            log.debug("Blob \"{}\" reports an unknown length, the {} bytes cap cannot be checked.",
+                    blob.getFilename(), MAX_PDF_SIZE);
+        } else if (length > MAX_PDF_SIZE) {
+            throw badRequest("PDF \"" + blob.getFilename() + "\" is " + length + " bytes, above the "
                     + MAX_PDF_SIZE + " bytes limit supported by this plugin.");
         }
     }
@@ -194,7 +237,12 @@ public final class PDFTools {
     public static Set<Integer> parsePageRange(String range, int pageCount) {
 
         Set<Integer> pages = new TreeSet<>();
-        String[] parts = range.split(",");
+        /*
+         * Split with a negative limit so trailing empty tokens are kept. The default limit drops them,
+         * which made "2-4," silently valid while ",2-4" was rejected — the same typo accepted or
+         * refused depending on which end it was on.
+         */
+        String[] parts = range.split(",", -1);
 
         for (String part : parts) {
             String token = part.trim();

@@ -26,7 +26,6 @@ import org.nuxeo.ecm.automation.core.annotations.OperationMethod;
 import org.nuxeo.ecm.automation.core.annotations.Param;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.DocumentModel;
-import org.nuxeo.ecm.core.api.NuxeoException;
 
 import nuxeo.labs.pdf.toolkit.PDFDestinationHandler;
 import nuxeo.labs.pdf.toolkit.PDFPageOrdering;
@@ -77,7 +76,7 @@ public class PDFPageOrderingOp {
                 newPageOrder[i] = arr.getInt(i);
             }
         } catch (JSONException e) {
-            throw new NuxeoException(
+            throw PDFTools.badRequest(
                     "pageOrderJsonStr must be a JSON array of integers, for example \"[3,1,4,2]\". Received: "
                             + pageOrderJsonStr,
                     e);

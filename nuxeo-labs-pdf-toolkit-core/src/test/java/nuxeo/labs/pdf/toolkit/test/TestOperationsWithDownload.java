@@ -298,6 +298,20 @@ public class TestOperationsWithDownload {
     }
 
     @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectLeadingComma() {
+        new PDFPageExtractor(testPdfBlob()).extractPages(",2,4");
+    }
+
+    /**
+     * split(",") drops trailing empty tokens, so "2,4," used to be silently accepted while ",2,4" was
+     * refused: the same typo passed or failed depending on which end it was on.
+     */
+    @Test(expected = IllegalArgumentException.class)
+    public void shouldRejectTrailingComma() {
+        new PDFPageExtractor(testPdfBlob()).extractPages("2,4,");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
     public void shouldRejectNonNumericRange() {
         new PDFPageExtractor(testPdfBlob()).extractPages("two");
     }

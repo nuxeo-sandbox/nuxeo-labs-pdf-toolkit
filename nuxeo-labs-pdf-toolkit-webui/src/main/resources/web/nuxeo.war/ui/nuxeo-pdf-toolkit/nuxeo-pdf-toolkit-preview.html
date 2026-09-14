@@ -134,8 +134,28 @@ Displays a bigger preview of a single page, in its own dialog.
             .catch(function(error) {
               console.error(error);
               this.set('_loadingPreview', false);
-              this.fire('notify', { message: this.i18n('pdftoolkit.error.previewFailed') });
-              this.$.previewDialog.close();
+              // Surface the server wording when there is one: "is password-protected", etc.
+              var response = error && error.response;
+              var done = function(message) {
+                this.fire('notify', { message: message || this.i18n('pdftoolkit.error.previewFailed') });
+                this.$.previewDialog.close();
+              }.bind(this);
+
+              if (!response || typeof response.text !== 'function') {
+                done('');
+                return;
+              }
+              response.text()
+                .then(function(body) {
+                  var message = '';
+                  try {
+                    message = JSON.parse(body).message || '';
+                  } catch (e) {
+                    message = '';
+                  }
+                  done(message === 'Internal Server Error' ? '' : message);
+                })
+                .catch(function() { done(''); });
             }.bind(this));
         },
 

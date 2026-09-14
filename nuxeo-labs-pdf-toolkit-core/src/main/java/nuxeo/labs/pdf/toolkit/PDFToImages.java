@@ -198,6 +198,26 @@ public class PDFToImages {
     public static final String CHUNK_SIZE_PROPERTY = "nuxeo.pdftoolkit.thumbnails.chunkSize";
 
     /**
+     * Largest chunk size {@link #CHUNK_SIZE_PROPERTY} may ask for.
+     * <p>
+     * A typo guard, not a tuning knob: {@code 5000} instead of {@code 500} would make a single request
+     * open the PDF and rasterize five thousand pages before answering anything.
+     *
+     * @since 2025.8
+     */
+    public static final int MAX_CONFIGURABLE_CHUNK_SIZE = 500;
+
+    /**
+     * Largest value {@link #MAX_PAGES_PROPERTY} and {@link #THUMBNAILS_MAX_PAGES_PROPERTY} may ask for.
+     * <p>
+     * Same rationale as {@link #MAX_CONFIGURABLE_CHUNK_SIZE}: an administrator raising a page limit is
+     * legitimate, an administrator typing an extra zero is not.
+     *
+     * @since 2025.8
+     */
+    public static final int MAX_CONFIGURABLE_PAGES = 10_000;
+
+    /**
      * Default maximum number of pages {@code PDFLabs.PrepareThumbnails} accepts to expose.
      * <p>
      * Rendering is bounded by chunks, so this is not about the server: it is about the browser. Every
@@ -496,7 +516,7 @@ public class PDFToImages {
     protected void checkPageCount(int pageCount) {
 
         if (maxPageCount > 0 && pageCount > maxPageCount) {
-            throw new NuxeoException("PDF \"" + pdfBlob.getFilename() + "\" has " + pageCount + " pages, above the "
+            throw PDFTools.badRequest("PDF \"" + pdfBlob.getFilename() + "\" has " + pageCount + " pages, above the "
                     + maxPageCount + " pages limit for the thumbnails UI. Raise " + THUMBNAILS_MAX_PAGES_PROPERTY
                     + " if your browser can afford it.");
         }
@@ -557,7 +577,7 @@ public class PDFToImages {
      */
     protected static int getMaxPages() {
 
-        return getPositiveIntProperty(MAX_PAGES_PROPERTY, DEFAULT_MAX_PAGES);
+        return getPositiveIntProperty(MAX_PAGES_PROPERTY, DEFAULT_MAX_PAGES, MAX_CONFIGURABLE_PAGES);
     }
 
     /**
@@ -567,7 +587,7 @@ public class PDFToImages {
      */
     public static int getChunkSize() {
 
-        return getPositiveIntProperty(CHUNK_SIZE_PROPERTY, DEFAULT_CHUNK_SIZE);
+        return getPositiveIntProperty(CHUNK_SIZE_PROPERTY, DEFAULT_CHUNK_SIZE, MAX_CONFIGURABLE_CHUNK_SIZE);
     }
 
     /**
@@ -578,7 +598,8 @@ public class PDFToImages {
      */
     public static int getThumbnailsMaxPages() {
 
-        return getPositiveIntProperty(THUMBNAILS_MAX_PAGES_PROPERTY, DEFAULT_THUMBNAILS_MAX_PAGES);
+        return getPositiveIntProperty(THUMBNAILS_MAX_PAGES_PROPERTY, DEFAULT_THUMBNAILS_MAX_PAGES,
+                MAX_CONFIGURABLE_PAGES);
     }
 
     /**
@@ -617,16 +638,25 @@ public class PDFToImages {
     /**
      * Read a strictly positive integer configuration property, falling back on {@code defaultValue}
      * when it is missing, not a number, or not positive.
+     * <p>
+     * {@code maxValue} is not a tuning knob, it is a typo guard: {@code chunkSize=5000} instead of
+     * {@code 500} would make one request render five thousand pages. Clamping turns a slip of the
+     * finger into a degraded service instead of an outage, and says so in the logs.
      *
      * @since 2025.7
      */
-    protected static int getPositiveIntProperty(String property, int defaultValue) {
+    protected static int getPositiveIntProperty(String property, int defaultValue, int maxValue) {
 
         String value = Framework.getProperty(property);
         if (StringUtils.isNotBlank(value)) {
             try {
                 int parsed = Integer.parseInt(value.trim());
                 if (parsed > 0) {
+                    if (parsed > maxValue) {
+                        log.warn("{} is {}, above the {} ceiling this plugin accepts. Using {}.", property, parsed,
+                                maxValue, maxValue);
+                        return maxValue;
+                    }
                     return parsed;
                 }
                 log.warn("{} must be > 0, found \"{}\". Falling back to {}.", property, value, defaultValue);
@@ -963,7 +993,7 @@ public class PDFToImages {
             return new ThumbnailsChunk(pageCount, chunkStart, chunkEnd, chunkSize, results, true, elapsed);
 
         } catch (InvalidPasswordException e) {
-            throw new NuxeoException(
+            throw PDFTools.badRequest(
                     "PDF \"" + pdfBlob.getFilename() + "\" is password-protected and cannot be processed.", e);
         } catch (IOException e) {
             throw new NuxeoException("Failed to extract pages " + chunkStart + " and following of \""
@@ -1047,7 +1077,7 @@ public class PDFToImages {
             return results;
 
         } catch (InvalidPasswordException e) {
-            throw new NuxeoException(
+            throw PDFTools.badRequest(
                     "PDF \"" + pdfBlob.getFilename() + "\" is password-protected and cannot be processed.", e);
         } catch (IOException e) {
             throw new NuxeoException("Failed to extract the pages of \"" + pdfBlob.getFilename() + "\".", e);
@@ -1063,7 +1093,7 @@ public class PDFToImages {
 
         int maxPages = getMaxPages();
         if (pageCount > maxPages) {
-            throw new NuxeoException("PDF \"" + pdfBlob.getFilename() + "\" has " + pageCount + " pages, above the "
+            throw PDFTools.badRequest("PDF \"" + pdfBlob.getFilename() + "\" has " + pageCount + " pages, above the "
                     + maxPages + " pages limit for thumbnails rendering. Raise " + MAX_PAGES_PROPERTY
                     + " if your server can afford it.");
         }
@@ -1199,7 +1229,7 @@ public class PDFToImages {
             return resizedBlob;
 
         } catch (InvalidPasswordException e) {
-            throw new NuxeoException(
+            throw PDFTools.badRequest(
                     "PDF \"" + pdfBlob.getFilename() + "\" is password-protected and cannot be processed.", e);
         } catch (IOException e) {
             throw new NuxeoException(

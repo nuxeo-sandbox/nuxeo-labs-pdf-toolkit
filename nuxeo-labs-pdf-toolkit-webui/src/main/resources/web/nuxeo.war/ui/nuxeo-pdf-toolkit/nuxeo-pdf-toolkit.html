@@ -802,9 +802,56 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         }
       },
 
+      /**
+       * The message the server sent, or '' when there is none we can use.
+       *
+       * The JS client rejects with a plain Error whose `message` is only the HTTP status text, and
+       * attaches the untouched Response as `error.response`. The useful wording — "is
+       * password-protected", "requires a multivalued blob property", "has no parent" — is in the body,
+       * and those messages are the only diagnostic a user or a support engineer ever gets.
+       *
+       * Note this only works because the plugin raises its user-fixable failures as 4xx: Nuxeo
+       * replaces the message of a 5xx with a bare "Internal Server Error" before it leaves the server.
+       */
+      _serverMessage: function(error) {
+        var response = error && error.response;
+        if (!response || typeof response.text !== 'function') {
+          return Promise.resolve('');
+        }
+
+        return response.text()
+          .then(function(body) {
+            if (!body) {
+              return '';
+            }
+            var message;
+            try {
+              message = JSON.parse(body).message;
+            } catch (e) {
+              // Not JSON: a plain text error page is still better than nothing, but not a whole page
+              message = body.length < 500 ? body : '';
+            }
+            if (!message || message === 'Internal Server Error') {
+              return '';
+            }
+            return message;
+          })
+          // The body may already have been consumed, or the response may not be readable at all
+          .catch(function() { return ''; });
+      },
+
+      /**
+       * Show the server message when there is one, the generic sentence otherwise.
+       */
+      _notifyFailure: function(error, fallbackKey) {
+        this._serverMessage(error).then(function(message) {
+          this.fire('notify', { message: message || this.i18n(fallbackKey) });
+        }.bind(this));
+      },
+
       _handleOperationError: function(error) {
         console.error(error);
-        this.fire('notify', { message: this.i18n('pdftoolkit.error.actionFailed') });
+        this._notifyFailure(error, 'pdftoolkit.error.actionFailed');
         // Hide overlay, but keep the dialog open so the user can try again
         this._finishRunningOperation();
       },
@@ -943,6 +990,9 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       /**
        * A failing chunk leaves its tiles on the placeholder, which is already a visible symptom. Only
        * tell the user once, otherwise a broken server turns a scroll into a flood of toasts.
+       *
+       * The page limit is recognised on the server message rather than on `JSON.stringify(error)`,
+       * which serialized an Error to "{}" and made the detection dead code.
        */
       _notifyChunkError: function(error) {
         if (this._chunkErrorNotified) {
@@ -950,19 +1000,14 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         }
         this._chunkErrorNotified = true;
 
-        // The server names the property to raise, which is how we recognize the page limit
-        var text = '';
-        try {
-          text = JSON.stringify(error) + ' ' + ((error && error.message) || '');
-        } catch (e) {
-          text = (error && error.message) || '';
-        }
-
-        var key = text.indexOf('thumbnails UI') > -1 || text.indexOf('thumbnails.maxPages') > -1
-          ? 'pdftoolkit.error.tooManyPages'
-          : 'pdftoolkit.error.thumbnailsFailed';
-
-        this.fire('notify', { message: this.i18n(key) });
+        this._serverMessage(error).then(function(message) {
+          var text = message || '';
+          if (text.indexOf('thumbnails UI') > -1 || text.indexOf('thumbnails.maxPages') > -1) {
+            this.fire('notify', { message: this.i18n('pdftoolkit.error.tooManyPages') });
+            return;
+          }
+          this.fire('notify', { message: text || this.i18n('pdftoolkit.error.thumbnailsFailed') });
+        }.bind(this));
       },
 
       _onChunkReady: function(chunkStart, response) {

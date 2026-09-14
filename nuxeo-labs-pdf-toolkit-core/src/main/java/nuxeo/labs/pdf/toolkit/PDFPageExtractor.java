@@ -114,7 +114,7 @@ public class PDFPageExtractor {
             return PDFTools.saveToFileBlob(pdfBlob, extracted, "pdf-extracted-pages", "-extracted");
 
         } catch (InvalidPasswordException e) {
-            throw new NuxeoException(
+            throw PDFTools.badRequest(
                     "PDF \"" + pdfBlob.getFilename() + "\" is password-protected and cannot be processed.", e);
         } catch (IOException e) {
             throw new NuxeoException("Failed to extract pages from the PDF \"" + pdfBlob.getFilename() + "\".", e);

@@ -295,7 +295,7 @@ Returns a `blob`, a pdf containing the extracted page(s).
 
 The extracted pages always keep their original document order, whatever the order used in the range string: `'8,2-4'` and `'2-4,8'` both produce pages 2, 3, 4, 8. Use `PDFLabs.ReorderPages` to obtain an arbitrary page order.
 
-If `pageRange` is malformed, a Java `IllegalArgumentException` is thrown. Malformed means a page number is < 1, or > number of pages, or a start page is > endPage ("10-2"), etc.
+If `pageRange` is malformed, a Java `IllegalArgumentException` is thrown. Malformed means a page number is < 1, or > number of pages, or a start page is > endPage ("10-2"), or an empty segment — `"2,,4"`, `",2"` and `"2,"` are all refused.
 
 > [!NOTE]
 > There also is a `PDF.ExtractPages` operation provided by the platform, which accepts only a start-end pages.
@@ -315,7 +315,7 @@ Returns a `blob`, a pdf containing the pdf without the page(s) removed.
     * '2-5,8, 10-14' removes pages 2 to 5, 8 and 10 to 14.
   * `destinationJsonStr`, string, optional (default to "download"). See below "The `destinationJsonStr` parameter".
 
-If `pageRange` is malformed, a Java `IllegalArgumentException` is thrown. Malformed means a page number is < 1, or > number of pages, or a start page is > endPage ("10-2"), etc.
+If `pageRange` is malformed, a Java `IllegalArgumentException` is thrown. Malformed means a page number is < 1, or > number of pages, or a start page is > endPage ("10-2"), or an empty segment — `"2,,4"`, `",2"` and `"2,"` are all refused.
 
 <br />
 
@@ -346,7 +346,7 @@ For some destination, an extra `details`field, object, can be passed (optional):
 * When `"attachments"`, `details` can have an `xpath` value, the field of type multivalued Blob where to append the resulting PDF. Default is `files:files`. The field **must** be a multivalued *blob* field: the operation fails explicitly on a single-valued blob field, rather than silently overwriting it, and on a multivalued field that does not hold blobs (`dc:subjects`, say).
 * When `"newFile"`, `details` can have:
   *`"createVersion"`, boolean, default `false`.
-  * If `createVersion` is `true`, another property `versionType`, string, must be either "Minor" or "Major" (defaults to `Minor`).
+  * If `createVersion` is `true`, another property `versionType`, string, must be either "Minor" or "Major" (defaults to `Minor`). Case and surrounding spaces do not matter, but **any other value is rejected**: this replaces `file:content`, and the version is the only safety net, so a typo must not silently produce a minor version.
 
 Here are some examples (don't forget to `JSON.stringify` before calling the operation):
 
@@ -397,15 +397,17 @@ Save to file, create minor version:
 
 | Property | Default | Description |
 | --- | --- | --- |
-| `nuxeo.pdftoolkit.thumbnails.chunkSize` | 50 | Number of pages rendered in one go by `PDFLabs.PrepareThumbnails`. This is the unit of work of the whole thumbnails pipeline: the PDF is opened, parsed and rendered once per chunk, **never once per page**. Lower it for a snappier scroll, raise it to fetch the blob from the storage less often. |
-| `nuxeo.pdftoolkit.thumbnails.maxPages` | 2000 | Maximum number of pages `PDFLabs.PrepareThumbnails` accepts to expose. Rendering is bounded by the chunk, so this is not about the server: every page becomes a tile in the dialog, and a few thousand tiles are enough to freeze a browser tab. |
-| `nuxeo.pdftoolkit.maxPages` | 150 | Maximum number of pages `PDFLabs.GetThumbnails` accepts to render. The whole result is built in memory as base64, so raise this only if your server can afford it. **Does not apply to `PDFLabs.PrepareThumbnails`**, which renders by chunks, nor to `ExtractPagesByRange`, `RemovePages` and `ReorderPages`, which never rasterize anything. |
+| `nuxeo.pdftoolkit.thumbnails.chunkSize` | 50 | Number of pages rendered in one go by `PDFLabs.PrepareThumbnails`. This is the unit of work of the whole thumbnails pipeline: the PDF is opened, parsed and rendered once per chunk, **never once per page**. Lower it for a snappier scroll, raise it to fetch the blob from the storage less often. Capped at 500. |
+| `nuxeo.pdftoolkit.thumbnails.maxPages` | 2000 | Maximum number of pages `PDFLabs.PrepareThumbnails` accepts to expose. Rendering is bounded by the chunk, so this is not about the server: every page becomes a tile in the dialog, and a few thousand tiles are enough to freeze a browser tab. Capped at 10000. |
+| `nuxeo.pdftoolkit.maxPages` | 150 | Maximum number of pages `PDFLabs.GetThumbnails` accepts to render. The whole result is built in memory as base64, so raise this only if your server can afford it. **Does not apply to `PDFLabs.PrepareThumbnails`**, which renders by chunks, nor to `ExtractPagesByRange`, `RemovePages` and `ReorderPages`, which never rasterize anything. Capped at 10000. |
 | `nuxeo.pdftoolkit.cache.targetMaxSizeMB` | 500 | Target size of the `PDFToolkitCache` transient store holding the thumbnails and the previews. The dialog asks for 256px thumbnails, so a 1000 pages PDF occupies roughly 10 to 15 MB. |
 | `nuxeo.pdftoolkit.cache.absoluteMaxSizeMB` | 600 | Hard size limit of the same store. A full cache never fails a request, it only disables caching. |
 | `nuxeo.pdftoolkit.verboseRendering` | `false` | Log every chunk rendering at `warn` instead of `info`. Useful because the plugin package is not covered by the stock `log4j2.xml`, so its `info` messages are invisible by default. See "Checking the chunking". |
 | `nuxeo.transientstore.rendition.cache.ttl` | 240 | First level TTL, in minutes, shared with the rendition cache. |
 
 All these have defaults, so the plugin handles a 1000 pages PDF out of the box, with no `nuxeo.conf` entry.
+
+The "capped at" values are typo guards, not tuning limits: `chunkSize=5000` instead of `500` would make a single request rasterize five thousand pages before answering. A value above the cap is clamped and a warning is logged, naming the property.
 
 <br />
 
@@ -423,6 +425,14 @@ On top of the properties above, a few limits are hardcoded because they protect 
 That last one matters more than it looks. The cost of rendering a page is driven by the **page geometry**, which comes from the file — and the PDF format allows a 200 x 200 inches page in a file of a few hundred bytes. Asking for a 256 px thumbnail of such a page used to make PDFBox allocate several hundred megabytes, or simply run out of memory, so a tiny file was enough to bring a server down.
 
 The plugin now derives the rendering scale from the **requested output size**, using the dpi only as an upper bound: a page larger than the target is rendered smaller than the dpi asks for. Normal page sizes are unaffected — a Letter or A4 page still renders exactly as before — and large-format documents (plans, posters, maps) simply became much faster.
+
+<br />
+
+### Error messages
+
+Failures the caller can fix — a blob that is not a PDF, a document with no blob, a malformed `destinationJsonStr`, an unknown `versionType`, a password-protected PDF, a page limit exceeded — are raised as **HTTP 400**, and the dialog displays the server message as-is rather than a generic sentence.
+
+This matters more than it sounds: Nuxeo replaces the message of any **5xx** with a bare `"Internal Server Error"` before it leaves the server, so an error left at the default status reaches the user stripped of its wording — and these messages are often the only diagnostic available. If you call the operations yourself, expect a `400` with a usable `message` for anything you got wrong, and a `500` only for a genuine server-side failure such as an I/O error while reading or writing the PDF.
 
 <br />
 

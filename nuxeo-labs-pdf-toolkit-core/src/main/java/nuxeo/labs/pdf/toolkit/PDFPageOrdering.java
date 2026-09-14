@@ -105,7 +105,7 @@ public class PDFPageOrdering {
             return PDFTools.saveToFileBlob(pdfBlob, reordered, "pdf", "-reordered");
 
         } catch (InvalidPasswordException e) {
-            throw new NuxeoException(
+            throw PDFTools.badRequest(
                     "PDF \"" + pdfBlob.getFilename() + "\" is password-protected and cannot be processed.", e);
         } catch (IOException e) {
             throw new NuxeoException("Failed to reorder pages in the PDF \"" + pdfBlob.getFilename() + "\".", e);

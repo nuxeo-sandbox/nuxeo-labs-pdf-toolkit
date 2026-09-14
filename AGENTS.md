@@ -30,7 +30,7 @@ mvn -pl nuxeo-labs-pdf-toolkit-core test -Dtest=TestOperationsDestinations#shoul
   `connect.nuxeo.com`. A cold `mvn clean install` also pulls the `nuxeo-nxr-server` zip for the
   `-package` module, which is large — prefer the `-pl ...-core` loop while iterating.
 - No CI, no formatter config, no lint step. `mvn clean install` is the whole gate.
-- 100 tests across 4 classes, all green, ~70 s. A failure is a real regression, not flakiness.
+- 113 tests across 4 classes, all green, ~70 s. A failure is a real regression, not flakiness.
 - `target/` may hold stale artifacts from an old `lts2023` build — never trust it without a
   `clean`. `nuxeo-labs-pdf-toolkit-core/bin/` is stale Eclipse output from before the
   `nuxeo.labs.pdf.tools` → `nuxeo.labs.pdf.toolkit` rename; it is gitignored, ignore it.
@@ -58,6 +58,14 @@ mvn -pl nuxeo-labs-pdf-toolkit-core test -Dtest=TestOperationsDestinations#shoul
 - `checkIsProcessablePdf` also caps the input at `PDFTools.MAX_PDF_SIZE` (200 MB): PDFBox loads
   the document in memory. A blank mime type is accepted on purpose (some blobs have none, and
   PDFBox rejects the content anyway); a non-`application/pdf` one is refused.
+- `PDFTools.parsePageRange` splits with `split(",", -1)`. The default limit drops trailing empty
+  tokens, which made `"2,4,"` silently valid while `",2,4"` was rejected — the same typo accepted or
+  refused depending on which end it was on.
+- `checkIsProcessablePdf` treats a `getLength()` of -1 (unknown length) explicitly. `length > MAX`
+  is false for -1, so the cap silently did not apply.
+- `parseVersioningOption()` refuses anything but minor/major (any case, trimmed). It runs on the path
+  that replaces `file:content`, and the version is the user's only safety net, so `"Majr"` must not
+  quietly produce a minor version.
 - `PDFDestinationHandler` owns the shared `destinationJsonStr` contract
   (`download` / `derivative` / `attachments` / `newFile`), one protected method per
   destination. Any new mutating operation should delegate to it rather than re-implementing a
@@ -258,8 +266,10 @@ Keep a factor ≥ 2, or the thumbnails get visibly worse.
 | `nuxeo.pdftoolkit.verboseRendering` | false | Chunk renderings logged at `warn` |
 
 All read through `getPositiveIntProperty()`, which falls back on the constant when the property is
-missing, non-numeric or ≤ 0. **Everything works with no `nuxeo.conf` entry** — that matters, the
-plugin ships on presales demo instances.
+missing, non-numeric or ≤ 0, and **clamps above a ceiling** (`MAX_CONFIGURABLE_CHUNK_SIZE` = 500,
+`MAX_CONFIGURABLE_PAGES` = 10000). The ceiling is a typo guard, not a tuning limit: `chunkSize=5000`
+instead of `500` makes one request rasterize five thousand pages. **Everything works with no
+`nuxeo.conf` entry** — that matters, the plugin ships on presales demo instances.
 
 ## Anything user-facing must reach `README.md`
 
@@ -497,7 +507,18 @@ Polymer 2 / Web UI legacy elements under
   `Framework.getService()` for lookups, checked exceptions wrapped in `NuxeoException`,
   `@since 2025.XX` on new public API.
 - Exception messages name the offending blob/document/property. They are the only diagnostic a
-  support engineer gets.
+  support engineer gets — **which is why every caller-fixable failure must be a 4xx**. Nuxeo replaces
+  the message of a 5xx with a bare "Internal Server Error" before it leaves the server
+  (`JsonWebengineWriter.getExceptionMessage`), so an exception left at the default status arrives
+  stripped of the wording you just wrote. Raise them through `PDFTools.badRequest(...)`, which carries
+  `SC_BAD_REQUEST`. Keep a plain `NuxeoException` (500) only for genuine server faults — an
+  `IOException` while reading or writing the PDF. `assertBadRequest` in `TestOperationsDestinations`
+  guards a few of them.
+- The Web UI reads that message back: `_serverMessage(error)` parses `error.response`, because the
+  JS client only puts the HTTP status text in `error.message` and leaves the body untouched on
+  `error.response`. `_notifyFailure` shows it and falls back on the generic i18n key. This is also
+  what makes `_notifyChunkError`'s page-limit detection work — it used to match on
+  `JSON.stringify(error)`, which serializes an `Error` to `{}`, so the branch was dead code.
 - Comments: `//` per line for 1–3 lines, block comment for 4+.
 - Known typos kept for compatibility — do not "fix" without checking callers:
   `PDFJpegimagePreviewOp` (lowercase `image`), `TEST_PDF_PAH` in tests,

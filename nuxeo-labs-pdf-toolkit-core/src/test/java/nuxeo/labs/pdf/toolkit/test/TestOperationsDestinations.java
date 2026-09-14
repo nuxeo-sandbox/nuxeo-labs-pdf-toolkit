@@ -47,11 +47,13 @@ import org.nuxeo.ecm.automation.AutomationService;
 import org.nuxeo.ecm.automation.OperationContext;
 import org.nuxeo.ecm.automation.test.AutomationFeature;
 import org.nuxeo.ecm.core.api.Blob;
+import org.nuxeo.ecm.core.api.Blobs;
 import org.nuxeo.ecm.core.api.CoreInstance;
 import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
 import org.nuxeo.ecm.core.api.DocumentSecurityException;
 import org.nuxeo.ecm.core.api.IdRef;
+import org.nuxeo.ecm.core.api.NuxeoException;
 import org.nuxeo.ecm.core.api.impl.blob.FileBlob;
 import org.nuxeo.ecm.core.api.security.ACE;
 import org.nuxeo.ecm.core.api.security.ACL;
@@ -67,6 +69,7 @@ import org.nuxeo.runtime.test.runner.FeaturesRunner;
 import org.nuxeo.runtime.test.runner.TransactionalFeature;
 
 import jakarta.inject.Inject;
+import nuxeo.labs.pdf.toolkit.PDFTools;
 import nuxeo.labs.pdf.toolkit.operations.PDFPageExtractorOp;
 import nuxeo.labs.pdf.toolkit.operations.PDFPageRemoverOp;
 
@@ -578,5 +581,121 @@ public class TestOperationsDestinations {
         checkNumberOfPages(result, 3);
 
         checkOriginalNotModified(doc);
+    }
+
+    // ========================================
+    // versionType is not silently coerced
+    // ========================================
+
+    /**
+     * This runs on the most destructive path of the plugin, and the version is the user's only safety
+     * net: a typo must not quietly produce a minor version they did not ask for.
+     */
+    @Test
+    public void shouldRejectAnUnknownVersionType() throws Exception {
+
+        DocumentModel doc = createTestDoc();
+
+        try {
+            runExtract(doc, "{\"destination\":\"newFile\",\"details\":{\"createVersion\":true,"
+                    + "\"versionType\":\"Majr\"}}");
+            fail("Should have rejected an unknown versionType");
+        } catch (Exception e) {
+            assertFailureMentions(e, "Unknown versionType");
+        }
+
+        checkOriginalNotModified(doc);
+    }
+
+    @Test
+    public void shouldAcceptVersionTypeWhateverItsCaseAndSpacing() throws Exception {
+
+        DocumentModel doc = createTestDoc();
+
+        Blob result = runExtract(doc, "{\"destination\":\"newFile\",\"details\":{\"createVersion\":true,"
+                + "\"versionType\":\"  MAJOR \"}}");
+        assertNotNull(result);
+
+        txFeature.nextTransaction();
+
+        doc = session.getDocument(doc.getRef());
+        assertEquals("1.0+", doc.getVersionLabel());
+    }
+
+    // ========================================
+    // Failures the caller can fix must be 4xx
+    //
+    // Nuxeo masks the message of a 5xx before it reaches the browser, so an exception left at the
+    // default 500 arrives as a bare "Internal Server Error" and the careful wording is lost exactly
+    // when someone needs it.
+    // ========================================
+    protected void assertBadRequest(Exception e) {
+
+        Throwable current = e;
+        while (current != null) {
+            if (current instanceof NuxeoException ne && ne.getStatusCode() == PDFTools.SC_BAD_REQUEST) {
+                return;
+            }
+            current = current.getCause();
+        }
+        fail("No 400 NuxeoException in the chain. Root was: " + e);
+    }
+
+    @Test
+    public void shouldRaiseABadRequestOnAnUnknownDestination() throws Exception {
+        try {
+            runExtract(createTestDoc(), "{\"destination\": \"nowhere\"}");
+            fail("Should have rejected an unknown destination");
+        } catch (Exception e) {
+            assertBadRequest(e);
+        }
+    }
+
+    @Test
+    public void shouldRaiseABadRequestOnAMalformedDestinationJson() throws Exception {
+        try {
+            runExtract(createTestDoc(), "{not json at all");
+            fail("Should have rejected a malformed destinationJsonStr");
+        } catch (Exception e) {
+            assertBadRequest(e);
+        }
+    }
+
+    @Test
+    public void shouldRaiseABadRequestOnANonPdfBlob() throws Exception {
+
+        DocumentModel doc = session.createDocumentModel("/", "notAPdf", "File");
+        doc.setPropertyValue("file:content", (Serializable) Blobs.createBlob("I am not a PDF", "text/plain"));
+        doc = session.createDocument(doc);
+
+        OperationContext ctx = new OperationContext(session);
+        ctx.setInput(doc);
+        Map<String, Object> params = new HashMap<>();
+        params.put("pageRange", "1");
+
+        try {
+            automationService.run(ctx, PDFPageExtractorOp.ID, params);
+            fail("Should have rejected a non-PDF blob");
+        } catch (Exception e) {
+            assertBadRequest(e);
+        }
+    }
+
+    @Test
+    public void shouldRaiseABadRequestOnADocumentWithoutBlob() throws Exception {
+
+        DocumentModel doc = session.createDocument(session.createDocumentModel("/", "empty", "File"));
+
+        OperationContext ctx = new OperationContext(session);
+        ctx.setInput(doc);
+        Map<String, Object> params = new HashMap<>();
+        params.put("pageRange", "1");
+
+        try {
+            automationService.run(ctx, PDFPageExtractorOp.ID, params);
+            fail("Should have rejected a document with no blob");
+        } catch (Exception e) {
+            assertBadRequest(e);
+        }
     }
 }

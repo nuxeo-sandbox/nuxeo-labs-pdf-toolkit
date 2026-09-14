@@ -164,7 +164,7 @@ public class PDFDestinationHandler {
             try {
                 json = new JSONObject(destinationDetailsJsonStr);
             } catch (JSONException e) {
-                throw new NuxeoException("destinationJsonStr is not valid JSON: " + destinationDetailsJsonStr, e);
+                throw PDFTools.badRequest("destinationJsonStr is not valid JSON: " + destinationDetailsJsonStr, e);
             }
             destinationLabel = json.optString("destination", "download");
             /*
@@ -181,14 +181,14 @@ public class PDFDestinationHandler {
         try {
             this.destination = Destination.fromLabel(destinationLabel);
         } catch (IllegalArgumentException e) {
-            throw new NuxeoException("Unknown destination \"" + destinationLabel + "\". Expected one of "
+            throw PDFTools.badRequest("Unknown destination \"" + destinationLabel + "\". Expected one of "
                     + Arrays.toString(Destination.values()) + ".", e);
         }
         this.details = destinationDetails;
 
         // Sanity check
         if (this.doc == null && this.destination != Destination.DOWNLOAD) {
-            throw new NuxeoException("A document is required when destination is not just a download.");
+            throw PDFTools.badRequest("A document is required when destination is not just a download.");
         }
     }
 
@@ -242,7 +242,7 @@ public class PDFDestinationHandler {
         try {
             targetProperty = doc.getProperty(xpath);
         } catch (PropertyNotFoundException e) {
-            throw new NuxeoException("Property \"" + xpath + "\" does not exist on document " + doc.getId() + ".", e);
+            throw PDFTools.badRequest("Property \"" + xpath + "\" does not exist on document " + doc.getId() + ".", e);
         }
 
         /*
@@ -251,7 +251,7 @@ public class PDFDestinationHandler {
          * "attachments", destroying a single-valued blob is never the expected outcome.
          */
         if (!targetProperty.isList()) {
-            throw new NuxeoException("Destination \"attachments\" requires a multivalued blob property, but \"" + xpath
+            throw PDFTools.badRequest("Destination \"attachments\" requires a multivalued blob property, but \"" + xpath
                     + "\" is single-valued. Use destination \"newFile\" to replace a blob.");
         }
 
@@ -262,7 +262,7 @@ public class PDFDestinationHandler {
          */
         Type itemType = ((ListType) targetProperty.getType()).getFieldType();
         if (!itemType.isComplexType() || !((ComplexType) itemType).hasField("file")) {
-            throw new NuxeoException("Destination \"attachments\" requires a list of blobs, but \"" + xpath
+            throw PDFTools.badRequest("Destination \"attachments\" requires a list of blobs, but \"" + xpath
                     + "\" holds " + itemType.getName() + ".");
         }
 
@@ -280,7 +280,7 @@ public class PDFDestinationHandler {
         // Like details.getString("destinationPath") or details.getString("destinationID")
         DocumentRef target = doc.getParentRef();
         if (target == null) {
-            throw new NuxeoException("Cannot create a derivative of document " + doc.getId()
+            throw PDFTools.badRequest("Cannot create a derivative of document " + doc.getId()
                     + ": it has no parent (is it a version or the repository root?).");
         }
 
@@ -321,11 +321,7 @@ public class PDFDestinationHandler {
 
         // Create version?
         if (details.optBoolean("createVersion", false)) {
-            // Realign versionType to be cool with the caller and avoid failing at version creation
-            String versionType = details.optString("versionType", "Minor").toLowerCase();
-            VersioningOption versioningOption = "major".equals(versionType) ? VersioningOption.MAJOR
-                    : VersioningOption.MINOR;
-            doc.putContextData(VersioningService.VERSIONING_OPTION, versioningOption);
+            doc.putContextData(VersioningService.VERSIONING_OPTION, parseVersioningOption());
             doc = session.saveDocument(doc);
             // Clear context data to avoid incrementing version in next operations if not needed.
             doc = session.getDocument(doc.getRef());
@@ -337,6 +333,31 @@ public class PDFDestinationHandler {
         log.debug("Replaced file:content of document {} with \"{}\".", doc.getId(), pdf.getFilename());
 
         return Blobs.createJSONBlob("{\"status\": \"done\"}");
+    }
+
+    /**
+     * Read {@code details.versionType}, accepting any case and surrounding spaces.
+     * <p>
+     * An unknown value is refused rather than silently treated as minor. This runs on the most
+     * destructive path of the plugin — {@code file:content} is about to be replaced — and the version
+     * is the user's only safety net, so a typo such as {@code "Majr"} must not quietly produce a minor
+     * version the user did not ask for.
+     *
+     * @since 2025.8
+     */
+    protected VersioningOption parseVersioningOption() {
+
+        String versionType = details.optString("versionType", "minor");
+        String normalized = versionType == null ? "" : versionType.trim().toLowerCase();
+
+        switch (normalized) {
+        case "major":
+            return VersioningOption.MAJOR;
+        case "", "minor":
+            return VersioningOption.MINOR;
+        default:
+            throw PDFTools.badRequest("Unknown versionType \"" + versionType + "\". Expected \"minor\" or \"major\".");
+        }
     }
 
 }
