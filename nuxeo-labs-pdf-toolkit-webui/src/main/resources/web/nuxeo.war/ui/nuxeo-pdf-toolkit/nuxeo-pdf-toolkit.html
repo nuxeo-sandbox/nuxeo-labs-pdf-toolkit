@@ -115,7 +115,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
     </div>
     <paper-tooltip for="bt">[[i18n(label)]]</paper-tooltip>
 
-    <paper-dialog id="dialog" modal>
+    <paper-dialog id="dialog" modal on-iron-overlay-opened="_onDialogOverlayOpened">
       <div class="dialog-header">
         [[document.title]]
         <span class="page-count" hidden$="[[!_pageCount]]">[[i18n('pdftoolkit.label.pageCount', _pageCount)]]</span>
@@ -230,12 +230,16 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
 
         /*
          * Trace the chunk loading in the browser console: visible pages, chunks requested, chunks
-         * applied and how many tiles each filled. Off by default, set the attribute to turn it on:
-         * <nuxeo-pdf-toolkit document="[[document]]" debug></nuxeo-pdf-toolkit>
+         * applied and how many tiles each filled. Off by default. Two ways to turn it on, the second
+         * one needing no rebuild at all, which matters because this is the only diagnostic there is:
+         *   <nuxeo-pdf-toolkit document="[[document]]" debug></nuxeo-pdf-toolkit>
+         *   window.NUXEO_PDF_TOOLKIT_DEBUG = true   (in the console, before opening the dialog)
          */
         debug: {
           type: Boolean,
-          value: false
+          value: function() {
+            return typeof window !== 'undefined' && !!window.NUXEO_PDF_TOOLKIT_DEBUG;
+          }
         },
 
         loading: {
@@ -315,6 +319,30 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         _scrollTopBeforePreview: {
           type: Number,
           value: 0
+        },
+
+        // Last known scroll position, kept up to date while the user scrolls
+        _lastScrollTop: {
+          type: Number,
+          value: 0
+        },
+
+        // Bound reference of the listener kept on the scrolling container
+        _dialogScrollHandler: {
+          type: Object,
+          value: null
+        },
+
+        // The node that listener is attached to, to detect a replaced container
+        _dialogScrollTarget: {
+          type: Object,
+          value: null
+        },
+
+        // True between the closing of a preview and the scroll wipe that follows it
+        _restorePending: {
+          type: Boolean,
+          value: false
         }
 
       },
@@ -328,6 +356,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
           clearTimeout(this._hideOverlayTimer);
           this._hideOverlayTimer = 0;
         }
+        this._unbindDialogScroll();
       },
 
       _documentChanged: function() {
@@ -344,7 +373,8 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         return this.i18n('pdftoolkit.label.processing');
       },
 
-      _resetChunkState: function() {        this.set('_pageCount', 0);
+      _resetChunkState: function() {
+        this.set('_pageCount', 0);
         this.set('_chunkSize', 0);
         this._preparedChunks = {};
         this._pendingChunks = {};
@@ -357,8 +387,60 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
         if (!this.document) {
           return;
         }
+
+        /*
+         * Re-read the debug flag here. This element is created together with the document page, long
+         * before anyone can set the flag from the console, so a `value:` read once at creation time
+         * is always too early. localStorage is honoured too, as it survives a page reload.
+         */
+        if (!this.debug && typeof window !== 'undefined') {
+          var stored = window.localStorage && window.localStorage.getItem('NUXEO_PDF_TOOLKIT_DEBUG');
+          if (window.NUXEO_PDF_TOOLKIT_DEBUG || stored) {
+            this.set('debug', true);
+          }
+        }
+
+        this._lastScrollTop = 0;
+        this._scrollTopBeforePreview = 0;
+        this._restorePending = false;
         this.$.dialog.open();
+        this._bindDialogScroll();
         this._loadThumbnails();
+      },
+
+      /**
+       * Keep track of where the user is, continuously.
+       *
+       * Idempotent and self-healing, like the grid's own binding: the content container is replaced
+       * when the dialog is re-opened, and a listener left behind on the old node silently stops
+       * updating _lastScrollTop — which then stays frozen at its last value for good.
+       */
+      _bindDialogScroll: function() {
+        var container = this.$.dialogContent;
+        if (!container) {
+          return;
+        }
+        if (this._dialogScrollTarget === container && container.isConnected) {
+          return;
+        }
+
+        this._unbindDialogScroll();
+
+        this._dialogScrollTarget = container;
+        this._dialogScrollHandler = function() {
+          if (container.scrollTop > 0) {
+            this._lastScrollTop = container.scrollTop;
+          }
+        }.bind(this);
+        container.addEventListener('scroll', this._dialogScrollHandler, { passive: true });
+      },
+
+      _unbindDialogScroll: function() {
+        if (this._dialogScrollTarget && this._dialogScrollHandler) {
+          this._dialogScrollTarget.removeEventListener('scroll', this._dialogScrollHandler);
+        }
+        this._dialogScrollTarget = null;
+        this._dialogScrollHandler = null;
       },
 
       _onCloseTap: function() {
@@ -378,39 +460,142 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       // ==============================================
       _onPagePreview: function(e) {
         /*
-         * Remember where the grid is. Opening and closing a second, modal overlay on top of this one
-         * can send the scrolling container back to the top, which used to drop the user on page 1
-         * every time a preview was closed.
+         * The live value wins. _lastScrollTop is only a fallback for the case where the position was
+         * already wiped before we got here: trusting it first froze the saved position at whatever
+         * the first restoration had written, and every later preview came back to that same page.
          */
-        this._scrollTopBeforePreview = this.$.dialogContent ? this.$.dialogContent.scrollTop : 0;
+        var container = this.$.dialogContent;
+        var live = container ? container.scrollTop : 0;
+        this._scrollTopBeforePreview = live > 0 ? live : this._lastScrollTop;
 
         if (this.debug) {
           console.log('[pdf-toolkit] preview opening for page ' + e.detail.pageNum
-            + ', scrollTop=' + this._scrollTopBeforePreview);
+            + ', live=' + live + ', lastKnown=' + this._lastScrollTop
+            + ' -> saved=' + this._scrollTopBeforePreview);
         }
 
         this.$.preview.loadPreviewPage(this.document, e.detail.pageNum);
       },
 
       /**
-       * The preview dialog closed: put the grid back where it was and make sure it is still live.
+       * Closing an overlay stacked on top of this dialog makes the platform RE-OPEN this one.
        *
-       * Restoring the scroll is defensive — it costs nothing when the position was kept. Rebinding
-       * is not: a detach/attach cycle strips the scroll listener, and without it scrolling silently
-       * stops loading any new thumbnail.
+       * Measured on a 1000+ pages PDF: at that moment the content container goes through
+       * clientHeight = 0 and scrollHeight = 0, which wipes scrollTop with no assignment at all —
+       * there is nothing to intercept, only something to put back. This is the only place where the
+       * restoration may happen, and it must wait for the height to come back.
+       */
+      _onDialogOverlayOpened: function() {
+        var container = this.$.dialogContent;
+        var current = container ? container.scrollTop : -1;
+
+        // The container may have been replaced by the re-open: make sure we still track its scroll
+        this._bindDialogScroll();
+
+        // Logged unconditionally: a branch that stays silent when it does nothing is exactly what
+        // hid the previous defect.
+        if (this.debug) {
+          console.log('[pdf-toolkit] dialog overlay opened, scrollTop=' + current
+            + ', pending=' + !!this._restorePending
+            + ', saved=' + this._scrollTopBeforePreview);
+        }
+
+        if (!this._restorePending || !(this._scrollTopBeforePreview > 0)) {
+          return;
+        }
+
+        this._restoreScrollTop(this._scrollTopBeforePreview, 0);
+      },
+
+      /**
+       * Put the scroll back, retrying until it sticks.
+       *
+       * Assigning scrollTop is a no-op while the container has no height yet, and the height only
+       * comes back a few frames later, so a single assignment silently does nothing.
+       */
+      _restoreScrollTop: function(target, attempt) {
+        var MAX_ATTEMPTS = 12;
+        var container = this.$.dialogContent;
+
+        if (!container || !target || !this._restorePending) {
+          return;
+        }
+
+        if (attempt >= MAX_ATTEMPTS) {
+          // Running out of attempts with the position intact simply means nothing was ever wiped
+          var kept = Math.abs(container.scrollTop - target) < 2;
+          if (this.debug) {
+            if (kept) {
+              console.log('[pdf-toolkit] scroll was never wiped, position kept at ' + container.scrollTop);
+            } else {
+              console.warn('[pdf-toolkit] gave up restoring scrollTop to ' + target
+                + ' (still at ' + container.scrollTop + ') after ' + MAX_ATTEMPTS + ' attempts');
+            }
+          }
+          this._restorePending = false;
+          return;
+        }
+
+        /*
+         * Nothing was lost yet. Do NOT treat this as a success: the wipe may still be coming, and
+         * consuming the saved position here is precisely what neutralised the previous fix.
+         */
+        if (Math.abs(container.scrollTop - target) < 2) {
+          this.async(function() {
+            this._restoreScrollTop(target, attempt + 1);
+          }.bind(this), 50);
+          return;
+        }
+
+        // Assigning is pointless while the container has no height
+        if (container.clientHeight > 0 && container.scrollHeight > container.clientHeight) {
+          container.scrollTop = target;
+          if (Math.abs(container.scrollTop - target) < 2) {
+            if (this.debug) {
+              console.log('[pdf-toolkit] scrollTop restored to ' + container.scrollTop
+                + ' after ' + (attempt + 1) + ' attempt(s)');
+            }
+            this._restorePending = false;
+            this._scrollTopBeforePreview = 0;
+            this._lastScrollTop = container.scrollTop;
+            if (this.$.thumbnails) {
+              this.$.thumbnails.refreshScrollBinding();
+            }
+            return;
+          }
+        }
+
+        this.async(function() {
+          this._restoreScrollTop(target, attempt + 1);
+        }.bind(this), 50);
+      },
+
+      /**
+       * The preview dialog closed.
+       *
+       * The scroll is still INTACT at this point — measured. Touching it here is not just useless,
+       * it is harmful: an early "restore" finds the value already correct, declares success and
+       * consumes the saved position, so the real wipe a moment later has nothing left to put back.
+       * Only arm the restoration and let _onDialogOverlayOpened do the work.
        */
       _onPreviewDialogClosed: function() {
-        var container = this.$.dialogContent;
-        if (container && this._scrollTopBeforePreview && container.scrollTop !== this._scrollTopBeforePreview) {
-          if (this.debug) {
-            console.log('[pdf-toolkit] preview closed, restoring scrollTop '
-              + container.scrollTop + ' -> ' + this._scrollTopBeforePreview);
-          }
-          container.scrollTop = this._scrollTopBeforePreview;
-        } else if (this.debug) {
-          console.log('[pdf-toolkit] preview closed, scrollTop kept at '
-            + (container ? container.scrollTop : 'n/a'));
+        this._restorePending = true;
+
+        if (this.debug) {
+          var c = this.$.dialogContent;
+          console.log('[pdf-toolkit] preview closed, scrollTop=' + (c ? c.scrollTop : 'n/a')
+            + ', saved=' + this._scrollTopBeforePreview + ' — restoration armed');
         }
+
+        // Never stay armed: an unrelated overlay opening later must not move the grid
+        this.async(function() {
+          if (this._restorePending) {
+            this._restorePending = false;
+            if (this.debug) {
+              console.log('[pdf-toolkit] restoration window closed, nothing was wiped');
+            }
+          }
+        }.bind(this), 3000);
 
         if (this.$.thumbnails) {
           this.$.thumbnails.refreshScrollBinding();

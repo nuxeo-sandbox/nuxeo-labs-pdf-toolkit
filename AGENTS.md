@@ -336,11 +336,52 @@ Polymer 2 / Web UI legacy elements under
   enough — a stack of Polymer overlays (opening the page preview) detaches and re-attaches the
   element, and the grid then stopped loading anything on scroll, silently. `refreshScrollBinding()`
   is the public entry point, called by the orchestrator when the preview closes.
-- The orchestrator saves `scrollTop` before opening the preview and restores it on
-  `iron-overlay-closed`. Defensive, and free when the position was kept.
+- **Closing an overlay stacked on top of the dialog makes the platform re-open the dialog.**
+  Measured on a 1000 pages PDF: `iron-overlay-closed` fires on the preview with `scrollTop` still
+  intact, then `iron-overlay-opened` fires **twice** on `#dialog` and the content container goes
+  through `clientHeight = 0` / `scrollHeight = 0`. That wipes `scrollTop` with **no assignment at
+  all** — nothing to intercept, only something to put back. Restoring on `iron-overlay-closed` is
+  therefore always too early: `_onDialogOverlayOpened` + `_restoreScrollTop()` retry until the
+  height is back and the value sticks.
+- Two traps when debugging this by hand, both of which cost a wasted round trip:
+  - `scroll` events are **not `composed`**: a listener on `document` never sees a scroll happening
+    inside a shadow root. Attach it to the container itself.
+  - `document.contains(node)` **does not cross shadow boundaries** and answers `false` for a
+    perfectly live node. Use `node.isConnected`.
+- `window.NUXEO_PDF_TOOLKIT_DEBUG = true` (or the same key in `localStorage`) turns the traces on
+  without a rebuild, which the `debug` attribute alone cannot do (it needs a Studio change). The flag
+  is **re-read in `_openDialog()`**, not in the property's `value:` — the element is created with the
+  document page, long before anyone can set it from the console, so reading it once at creation time
+  is always too early.
+- **A branch that logs only when it acts is a blind spot.** `_onDialogOverlayOpened` logs its
+  decision every time, including "nothing to do". The previous version put its only `console.log`
+  inside the `if`, which hid the fact that the restoration was being skipped.
+- **Do not "restore" the scroll when nothing was lost.** `_onPreviewDialogClosed` only *arms*
+  `_restorePending`; the wipe happens later. An early restore finds the value already correct,
+  declares success and consumes `_scrollTopBeforePreview`, so the real wipe has nothing left to put
+  back — that defect silently neutralised a whole fix.
+- **The live `scrollTop` wins over `_lastScrollTop`.** The memorised value is only a fallback for a
+  position already wiped before we read it. Trusting it first froze the saved position at whatever
+  the first restoration had written, and every later preview came back to that same page.
+- **`_bindDialogScroll()` is self-healing too**, for the same reason as the grid's: the content
+  container is replaced when the dialog re-opens, and a listener left on the old node stops updating
+  `_lastScrollTop` for good. Any listener kept on a node inside this dialog needs that treatment.
+- The orchestrator keeps `_lastScrollTop` up to date on every scroll rather than reading the
+  position when the preview opens: once the scroll is wiped there is nothing left to read.
 - `debug` attribute on `<nuxeo-pdf-toolkit>` traces the whole chain in the console (visible pages,
   chunk queued/skipped/applied, tiles filled). There is no UI test harness, so this is the only
   diagnostic available — keep it working.
+- **One UI check is automated**, and it is the only one:
+
+  ```bash
+  node nuxeo-labs-pdf-toolkit-webui/src/test/js/scroll-harness.js
+  ```
+
+  It loads the real element definition out of `nuxeo-pdf-toolkit.html`, mocks everything around the
+  scroll and replays the preview scenario. No PDF, no server, no browser, ~1.5 s. **Run it after
+  touching the scroll, preview or dialog logic.** It is deliberately outside `mvn clean install`:
+  the plugin has no JS build, and adding Node to the build for one file would cost more than it is
+  worth. It calls private methods, so renaming them breaks it — fix the harness, do not delete it.
 - `.page-thumbnail` has a **fixed 120x170 box with `object-fit: contain`**. Without a reserved
   size, each incoming image reflows the grid and the browser — seeing a compact grid — schedules
   far more fetches than the viewport needs.
@@ -358,7 +399,8 @@ Polymer 2 / Web UI legacy elements under
   and maps `messages-fr.json` to both `fr` and `fr-FR`. Add every new key to both files, and
   never hardcode a user-visible string in an element.
 - There is no test harness for the UI — changes here are verified by `mvn clean install`
-  compiling/packaging only, and manually in a running server.
+  compiling/packaging only, and manually in a running server. The single exception is
+  `src/test/js/scroll-harness.js`, see above.
 
 ## Conventions
 

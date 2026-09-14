@@ -103,7 +103,7 @@ To override it, copy the contribution and tune it, typically in your Studio proj
 | `thumbnailWidth` | `256` | Max width, in pixels, of the thumbnails asked of the server. |
 | `thumbnailHeight` | `256` | Max height, in pixels. The CSS displays the tiles at 120px, so 256 still covers a high density screen. |
 | `thumbnailDpi` | `72` | Rendering resolution. **The rendering cost grows with the square of the dpi**, so this is the setting to change if the grid is slow to fill — not the width and height, which barely matter. |
-| `debug` | `false` | Trace the chunk loading in the browser console. See "Checking the chunking". |
+| `debug` | `false` | Trace the chunk loading in the browser console. Can also be turned on without touching Studio, with `window.NUXEO_PDF_TOOLKIT_DEBUG = true` or `localStorage.setItem('NUXEO_PDF_TOOLKIT_DEBUG', '1')`. See "Checking the chunking". |
 
 The `thumbnail*` attributes only affect this dialog. The defaults of the operations themselves stay at 512 px / 150 dpi, so Studio projects and scripts calling `PDFLabs.PrepareThumbnails` or `PDFLabs.GetThumbnails` are not impacted.
 
@@ -204,7 +204,16 @@ Four ways, from the least to the most intrusive.
 
 **1. The browser network tab.** Look at the response of `PDFLabs.PrepareThumbnails`: `"rendered": true` means the PDF was opened and that chunk rendered, `"rendered": false` means it came from the cache. Scrolling through a document must produce one call per chunk, and the thumbnail image requests themselves must never trigger a rendering.
 
-**2. The `debug` attribute** on `<nuxeo-pdf-toolkit>` (see "Element Attributes"). It traces the whole client side chain in the browser console, which is the only way to see why a tile stays empty:
+**2. The `debug` attribute** on `<nuxeo-pdf-toolkit>` (see "Element Attributes"). It traces the whole client side chain in the browser console, which is the only way to see why a tile stays empty.
+
+Setting the attribute means editing the slot contribution in Studio, so for a one-off investigation use one of these instead, in the browser console, **before opening the dialog**:
+
+```js
+window.NUXEO_PDF_TOOLKIT_DEBUG = true;                          // this page only
+localStorage.setItem('NUXEO_PDF_TOOLKIT_DEBUG', '1');           // survives a reload
+```
+
+Both are re-read every time the dialog opens. Output looks like:
 
 ```
 [pdf-toolkit] scan: 24 visible pages without an image (151..174)
@@ -413,6 +422,12 @@ The plugin is available on [Nuxeo MarketPlace](https://connect.nuxeo.com/nuxeo/s
 git clone https://github.com/nuxeo-sandbox/nuxeo-labs-pdf-toolkit
 cd nuxeo-labs-pdf-toolkit
 mvn clean install
+```
+
+The Web UI part has one standalone check, for the scroll position of the thumbnails dialog. It needs only `node`, no PDF and no server, and is not part of the Maven build:
+
+```bash
+node nuxeo-labs-pdf-toolkit-webui/src/test/js/scroll-harness.js
 ```
 
 <br />
