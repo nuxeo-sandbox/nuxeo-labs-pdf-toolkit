@@ -1,19 +1,26 @@
 /*
- * Checks the page numbering the thumbnails grid sends to the operations.
+ * Checks the page numbers the thumbnails grid produces — both the ranges it sends to the operations
+ * and the pages it reports as visible.
  *
  *   node nuxeo-labs-pdf-toolkit-webui/src/test/js/selection-harness.js
  *
  * Exit code 0 when every case passes. Like scroll-harness.js it needs nothing but node: the element
  * definition is loaded from nuxeo-pdf-toolkit-thumbnails.html itself, and the DOM is mocked away.
  *
- * Why it exists: Extract and Remove run on the SOURCE pdf, which a drag and drop does not reorder.
- * _getSelectedPageRanges() used to return the position in the grid, so after moving page 5 to the
- * front, selecting the first tile and clicking Extract produced original page 1 — and with the
- * "Replace file" destination, Remove deleted the wrong pages, silently. Nothing in the UI hinted at
- * it: the tiles even display "position (original)".
+ * Why it exists, twice over:
  *
- * Run it after touching the selection, drag and drop or range logic. It is deliberately outside
- * `mvn clean install`, for the same reason as scroll-harness.js.
+ * 1. Extract and Remove run on the SOURCE pdf, which a drag and drop does not reorder.
+ *    _getSelectedPageRanges() used to return the position in the grid, so after moving page 5 to the
+ *    front, selecting the first tile and clicking Extract produced original page 1 — and with the
+ *    "Replace file" destination, Remove deleted the wrong pages, silently. Nothing in the UI hinted
+ *    at it: the tiles even display "position (original)".
+ *
+ * 2. _visiblePageNumbers() finds the tiles on screen by binary search, which is only valid while
+ *    querySelectorAll returns them in vertical order — a CSS assumption. When it does not hold the
+ *    search yields an EMPTY range, so tiles simply never load and nothing is logged.
+ *
+ * Run it after touching the selection, drag and drop, range or visibility logic. It is deliberately
+ * outside `mvn clean install`, for the same reason as scroll-harness.js.
  *
  * Beware: it mocks Polymer internals and calls private methods, so renaming them breaks it.
  */
@@ -123,6 +130,50 @@ grid = makeGrid(5);
 grid.pages.reverse();
 select(grid, [0, 1, 2, 3, 4]);
 check('everything selected, order reversed', grid.getSelectedPageRanges(), '1-5');
+
+/* ==================== Visible page detection ==================== */
+
+/*
+ * _visiblePageNumbers() locates the tiles on screen by binary search, which is only valid while
+ * querySelectorAll returns them in vertical order. That is a CSS assumption, not a JS one, so the
+ * code checks it and falls back to a linear scan. Both paths are exercised here: the previous
+ * implementation's failure mode was an empty range nobody noticed.
+ */
+function fakeTile(index, top, height) {
+  return {
+    dataset: { index: String(index) },
+    getBoundingClientRect: function() { return { top: top, bottom: top + height }; }
+  };
+}
+
+function withTiles(pageCount, tiles) {
+  var g = makeGrid(pageCount);
+  g._getScrollContainer = function() {
+    return { getBoundingClientRect: function() { return { top: 0, bottom: 400, height: 400 }; } };
+  };
+  g.root = { querySelectorAll: function() { return tiles; }, querySelector: function() { return null; } };
+  return g;
+}
+
+// 10 tiles, 200px apart, 180px tall. The view is 0..400 with one screen of margin -> -400..800,
+// so tiles 0..4 intersect it.
+var ordered = [];
+for (var i = 0; i < 10; i++) {
+  ordered.push(fakeTile(i, i * 200, 180));
+}
+check('visible pages, tiles in vertical order', withTiles(10, ordered)._visiblePageNumbers().join(','), '1,2,3,4,5');
+
+// Same geometry, but the NodeList is not in vertical order: the binary search would be meaningless
+var shuffled = ordered.slice().reverse();
+check('visible pages, tiles out of order',
+  withTiles(10, shuffled)._visiblePageNumbers().sort(function(a, b) { return a - b; }).join(','),
+  '1,2,3,4,5');
+
+// A page that already has its image must never be requested again
+var withImages = withTiles(10, ordered);
+withImages.pages[0].image = 'http://example/1.jpg';
+withImages.pages[2].image = 'http://example/3.jpg';
+check('pages that already have an image are skipped', withImages._visiblePageNumbers().join(','), '2,4,5');
 
 console.log(failures === 0 ? '\nAll cases pass' : '\n' + failures + ' case(s) failed');
 process.exit(failures === 0 ? 0 : 1);

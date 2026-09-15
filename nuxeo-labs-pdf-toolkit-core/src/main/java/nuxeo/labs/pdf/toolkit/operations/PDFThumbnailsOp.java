@@ -60,10 +60,16 @@ public class PDFThumbnailsOp {
      * <p>
      * This bounds the <b>jpeg</b> bytes, and the peak heap is roughly four times that: the base64
      * string is 1.33x the bytes, it is held in a JSONArray, {@code toString()} duplicates the whole
-     * thing, and {@code createJSONBlob} copies it again. 5 MB of jpeg is therefore already ~20 MB of
-     * heap per concurrent call.
+     * thing, and {@code createJSONBlob} copies it again. 20 MB of jpeg is therefore about 80 MB of
+     * heap for one call.
+     * <p>
+     * It is deliberately well above the working set of a legitimate call: at the default 512 px /
+     * 150 dpi a page is roughly 40 to 60 KB, so the {@link PDFToImages#DEFAULT_MAX_PAGES} pages limit
+     * caps a normal request around 8 MB. This is the backstop for someone asking for 2000 px at
+     * 300 dpi, not the constraint a normal caller is expected to meet — a lower value would make this
+     * limit, rather than the page count, the thing users trip over.
      */
-    public static final long MAX_BASE64_PAYLOAD = 5L * 1024 * 1024;
+    public static final long MAX_BASE64_PAYLOAD = 20L * 1024 * 1024;
 
     @Param(name = "xpath", required = false)
     protected String xpath = "file:content";

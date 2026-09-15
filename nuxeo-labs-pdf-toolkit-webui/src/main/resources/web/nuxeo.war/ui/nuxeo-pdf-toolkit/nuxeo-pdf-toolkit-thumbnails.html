@@ -280,6 +280,12 @@ Actions are taken by the parent via events.
           _resizeHandler: {
             type: Object,
             value: null
+          },
+
+          // Bound reference of the container-level dragover listener, see _bindScroll
+          _containerDragHandler: {
+            type: Object,
+            value: null
           }
         },
 
@@ -459,6 +465,18 @@ Actions are taken by the parent via events.
           this._scrollHandler = this._scheduleChunkScan.bind(this);
           container.addEventListener('scroll', this._scrollHandler, { passive: true });
 
+          /*
+           * Track the pointer on the CONTAINER, not only on the tiles. The tile handler
+           * (_onDragOver) does not fire over the grid gap, the container padding, or the empty area
+           * below the last row — which is exactly where the user goes to reach the edge and trigger
+           * the auto-scroll. Without this, _dragMouseY froze at the last value seen over a tile and
+           * the scroll stalled halfway through a drag to the far end of a long document.
+           */
+          this._containerDragHandler = function(e) {
+            this._dragMouseY = e.clientY;
+          }.bind(this);
+          container.addEventListener('dragover', this._containerDragHandler);
+
           // Resizing changes the number of columns, hence what is on screen, without any scrolling
           this._resizeHandler = this._scheduleChunkScan.bind(this);
           window.addEventListener('resize', this._resizeHandler, { passive: true });
@@ -472,11 +490,15 @@ Actions are taken by the parent via events.
           if (this._scrollContainer && this._scrollHandler) {
             this._scrollContainer.removeEventListener('scroll', this._scrollHandler);
           }
+          if (this._scrollContainer && this._containerDragHandler) {
+            this._scrollContainer.removeEventListener('dragover', this._containerDragHandler);
+          }
           if (this._resizeHandler) {
             window.removeEventListener('resize', this._resizeHandler);
           }
           this._scrollContainer = null;
           this._scrollHandler = null;
+          this._containerDragHandler = null;
           this._resizeHandler = null;
         },
 
@@ -538,25 +560,46 @@ Actions are taken by the parent via events.
           var viewTop = containerRect.top - margin;
           var viewBottom = containerRect.bottom + margin;
 
-          // Binary search for the first tile whose bottom edge is at or below the top of the view
-          var low = 0;
-          var high = tiles.length - 1;
-          var first = tiles.length;
-          while (low <= high) {
-            var mid = (low + high) >> 1;
-            if (tiles[mid].getBoundingClientRect().bottom >= viewTop) {
-              first = mid;
-              high = mid - 1;
-            } else {
-              low = mid + 1;
+          /*
+           * The binary search below only works because the tiles come out of querySelectorAll in
+           * vertical order. That holds for the current grid, but it is an assumption about CSS, not
+           * about JS: `grid-auto-flow: column`, a sticky element inside the grid or a future layout
+           * change would silently break it and yield garbage. Check it on the two ends and fall back
+           * to a linear scan rather than fail quietly — the previous implementation's failure mode was
+           * exactly that, an empty range nobody noticed.
+           */
+          var ordered = tiles.length < 3
+            || tiles[0].getBoundingClientRect().top <= tiles[tiles.length - 1].getBoundingClientRect().top;
+
+          var first = 0;
+          if (ordered) {
+            // Binary search for the first tile whose bottom edge is at or below the top of the view
+            var low = 0;
+            var high = tiles.length - 1;
+            first = tiles.length;
+            while (low <= high) {
+              var mid = (low + high) >> 1;
+              if (tiles[mid].getBoundingClientRect().bottom >= viewTop) {
+                first = mid;
+                high = mid - 1;
+              } else {
+                low = mid + 1;
+              }
             }
+          } else if (this.debug) {
+            console.warn('[pdf-toolkit] tiles are not in vertical order, falling back to a linear scan');
           }
 
-          // Then walk forward while tiles still start before the bottom of the view
+          // Then collect what intersects the view
           var pageNumbers = [];
           for (var i = first; i < tiles.length; i++) {
-            if (tiles[i].getBoundingClientRect().top > viewBottom) {
-              break;
+            var rect = tiles[i].getBoundingClientRect();
+            if (rect.bottom < viewTop || rect.top > viewBottom) {
+              // In vertical order, nothing past the bottom of the view can be visible either
+              if (ordered && rect.top > viewBottom) {
+                break;
+              }
+              continue;
             }
             // The rank in the NodeList is not the rank in `pages`: read the bound index, like the
             // drag and drop handlers do.

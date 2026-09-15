@@ -263,7 +263,7 @@ Returns a JSON array of Base64 encoded jpeg thumbnails. To use one in an `<img s
 Values are snapped down to the rendering ladder (see "Rendering sizes are snapped to a ladder"), and values above the maximum are clamped rather than rejected.
 
 > [!WARNING]
-> As all is in memory as base64, this operation is limited twice: it fails on a PDF holding more than 150 pages (see "Configuration Properties" below to change this limit), and it fails as soon as the thumbnails exceed 5 MB, since the base64 payload and its copies cost about four times that in heap. `PDFLabs.PrepareThumbnails` has no such constraint, it renders by chunks.
+> As all is in memory as base64, this operation is limited twice: it fails on a PDF holding more than 150 pages (see "Configuration Properties" below to change this limit), and it fails as soon as the thumbnails exceed 20 MB of JPEG, the payload and its copies costing about four times that in heap. At the default 512 px / 150 dpi a page is roughly 40 to 60 KB, so 150 pages land around 8 MB: the size limit is the backstop for someone asking for 2000 px at 300 dpi, not the one a normal call is expected to meet. `PDFLabs.PrepareThumbnails` has no such constraint, it renders by chunks.
 
 <br />
 
@@ -329,6 +329,7 @@ Returns a `blob`, a pdf containing the pages having the new page order.
   * `xpath`: String, optional, used if input is `document`. `file:content` by default.
   * `pageOrderJsonStr`: String, required. A JSON Array as string, with the number of the current pages, reorganized in the array. For example, `"[3,1,4,2]"` => moves page 3 to first, page 1 to second, etc.
     * It is possible to generate a new page order with less pages. For example, if the PDF has 10 pages, it is OK to pass "[3,1,4,2]", it will create a 4 pages PDF.
+    * **Duplicates are rejected**: `"[1,1,2]"` fails. The operation reorders and optionally drops pages, it does not repeat them.
   * `destinationJsonStr`, string, optional (default to "download"). See below "The `destinationJsonStr` parameter".
 
 <br />
@@ -343,6 +344,11 @@ For some destination, an extra `details`field, object, can be passed (optional):
 * When `"derivative"`, `details` can have:
   * `"resetLifeCycle"`, a boolean, `false` by default.
   * `"derivativeTitle"`, string, the title to use for the copy. Default is the resulting PDF file name. A title holding a `/` is accepted: it is kept as `dc:title` and normalized for the document name.
+
+> [!NOTE]
+> The derivative is a **full copy** of the source document — its metadata, its attachments and its local ACLs — with only `file:content` replaced by the resulting PDF. It is not a new, empty document holding just the PDF.
+>
+> Also, the document *name* (hence the path) is derived from the title and **truncated to 24 characters** by the platform (`nuxeo.path.segment.maxsize`). The `dc:title` keeps the full text. Two derivatives whose titles share their first 24 characters therefore get auto-suffixed names, which is expected.
 * When `"attachments"`, `details` can have an `xpath` value, the field of type multivalued Blob where to append the resulting PDF. Default is `files:files`. The field **must** be a multivalued *blob* field: the operation fails explicitly on a single-valued blob field, rather than silently overwriting it, and on a multivalued field that does not hold blobs (`dc:subjects`, say).
 * When `"newFile"`, `details` can have:
   *`"createVersion"`, boolean, default `false`.

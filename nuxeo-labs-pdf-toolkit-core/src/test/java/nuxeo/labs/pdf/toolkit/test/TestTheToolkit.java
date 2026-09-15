@@ -1194,4 +1194,93 @@ public class TestTheToolkit {
             assertEquals("A caller-fixable failure must be a 4xx", PDFTools.SC_BAD_REQUEST, e.getStatusCode());
         }
     }
+
+    // ========================================
+    // Cache entry lifecycle
+    // ========================================
+
+    /** Exposes renderChunk, and lets the rendering fail on demand. */
+    static class FailingPDFToImages extends PDFToImages {
+
+        FailingPDFToImages(Blob b) {
+            super(b);
+        }
+
+        @Override
+        protected BufferedImage renderPage(PDFRenderer renderer, PDDocument document, int pageIndex, int renderDpi,
+                int maxSide) throws IOException {
+            throw new IOException("simulated rendering failure");
+        }
+
+        ThumbnailsChunk callRenderChunk(TransientStore store, String cacheKey, int chunkStart, int chunkSize) {
+            return renderChunk(store, cacheKey, chunkStart, chunkSize, "test");
+        }
+    }
+
+    /**
+     * createThumbnails() writes chunks without taking the render lock, so a failing renderChunk can
+     * run while another thread holds a perfectly valid entry under the very same key. Its cleanup must
+     * not throw that entry away.
+     */
+    @Test
+    public void shouldNotRemoveACacheEntryAnotherThreadCompleted() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        // A valid, completed entry, as a concurrent createThumbnails() would leave it
+        new PDFToImages(b).prepareChunk(1);
+        String key = new PDFToImages(b).getChunkCacheKey(1);
+        assertNotNull(key);
+        assertTrue(store.isCompleted(key));
+        int blobCount = store.getBlobs(key).size();
+        assertTrue(blobCount > 0);
+
+        try {
+            new FailingPDFToImages(b).callRenderChunk(store, key, 1, PDFToImages.getChunkSize());
+            fail("The rendering was supposed to fail");
+        } catch (NuxeoException expected) {
+            // that is the point
+        }
+
+        assertTrue("A completed entry must survive a concurrent failing render", store.isCompleted(key));
+        assertEquals("...and keep its blobs", blobCount, store.getBlobs(key).size());
+    }
+
+    /** A failed render must still not leave a half-baked entry behind. */
+    @Test
+    public void shouldRemoveItsOwnUnfinishedCacheEntry() throws Exception {
+
+        Blob b = createTestDocBlob();
+        String key = new PDFToImages(b).getChunkCacheKey(1);
+        assertTrue(cacheKeys().isEmpty());
+
+        try {
+            new FailingPDFToImages(b).callRenderChunk(store, key, 1, PDFToImages.getChunkSize());
+            fail("The rendering was supposed to fail");
+        } catch (NuxeoException expected) {
+            // that is the point
+        }
+
+        assertTrue("A failed render must not leave an entry behind", cacheKeys().isEmpty());
+    }
+
+    /**
+     * The endpoint calls this when a cached blob turns out to have lost its file, so that the retry
+     * actually renders instead of handing back the same dead entry.
+     */
+    @Test
+    public void shouldEvictTheChunkHoldingAPage() throws Exception {
+
+        Blob b = createTestDocBlob();
+
+        new PDFToImages(b).prepareChunk(1);
+        assertEquals(1, cacheKeys().size());
+
+        new PDFToImages(b).evictChunkOf(3);
+        assertTrue("The chunk holding page 3 must be gone", cacheKeys().isEmpty());
+
+        // And the next read renders it again rather than failing
+        assertNotNull(new PDFToImages(b).getThumbnail(3));
+        assertEquals(1, cacheKeys().size());
+    }
 }

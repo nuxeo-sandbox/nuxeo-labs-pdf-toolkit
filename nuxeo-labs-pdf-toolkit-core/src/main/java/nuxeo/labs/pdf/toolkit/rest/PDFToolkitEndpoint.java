@@ -19,6 +19,7 @@
 package nuxeo.labs.pdf.toolkit.rest;
 
 import java.io.IOException;
+import java.io.InputStream;
 
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
@@ -35,6 +36,8 @@ import jakarta.ws.rs.core.Request;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.Response.ResponseBuilder;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.nuxeo.ecm.core.api.Blob;
 import org.nuxeo.ecm.core.api.CoreSession;
 import org.nuxeo.ecm.core.api.DocumentModel;
@@ -61,6 +64,8 @@ import nuxeo.labs.pdf.toolkit.PDFToImages;
 @WebObject(type = "pdftoolkit")
 @Path("/pdftoolkit")
 public class PDFToolkitEndpoint extends ModuleRoot {
+
+    private static final Logger log = LogManager.getLogger(PDFToolkitEndpoint.class);
 
     /** Thumbnails are immutable for a given digest and rendering parameters, so they can be cached. */
     public static final int CACHE_MAX_AGE_SECONDS = 3600;
@@ -161,9 +166,17 @@ public class PDFToolkitEndpoint extends ModuleRoot {
          */
         ResponseBuilder builder;
         try {
-            builder = Response.ok(thumbnail.getStream()).type("image/jpeg").cacheControl(cacheControl(versionedUrl));
+            builder = Response.ok(openStream(pdfToImages, thumbnail, pageNum))
+                              .type("image/jpeg")
+                              .cacheControl(cacheControl(versionedUrl));
         } catch (IOException e) {
-            throw new NuxeoException("Failed to read the thumbnail of page " + pageNum + " of document " + docId, e);
+            /*
+             * The blob we just read from the cache no longer has a file behind it: the TransientStore
+             * GC or its size-based eviction fired between the lookup and the read. Rare, and entirely
+             * recoverable — but a 500 with a stack trace per tile is not the way to report it.
+             */
+            throw error(Response.Status.SERVICE_UNAVAILABLE, "The thumbnail of page " + pageNum + " of document "
+                    + docId + " expired while being served. Retry.");
         }
 
         long length = thumbnail.getLength();
@@ -175,6 +188,29 @@ public class PDFToolkitEndpoint extends ModuleRoot {
         }
 
         return builder.build();
+    }
+
+    /**
+     * Open the thumbnail, re-rendering its chunk once if the cached file vanished in between.
+     * <p>
+     * The blob comes from the TransientStore, whose GC and size-based eviction run on their own
+     * schedule. Between {@code getThumbnail()} returning and {@code getStream()} opening the file,
+     * the entry can disappear — the window is tiny, but the tile it breaks is visible. Dropping the
+     * stale entry and rendering the chunk again turns a hard failure into a slower success.
+     *
+     * @throws IOException if the second attempt fails too, in which case the caller answers 503
+     * @since 2025.8
+     */
+    protected InputStream openStream(PDFToImages pdfToImages, Blob thumbnail, int pageNum) throws IOException {
+
+        try {
+            return thumbnail.getStream();
+        } catch (IOException e) {
+            log.warn("Cached thumbnail of page {} vanished before it could be served, rendering again.", pageNum, e);
+            // getThumbnail() goes through prepareChunk(), which re-renders the whole chunk on a miss
+            pdfToImages.evictChunkOf(pageNum);
+            return pdfToImages.getThumbnail(pageNum).getStream();
+        }
     }
 
     /**

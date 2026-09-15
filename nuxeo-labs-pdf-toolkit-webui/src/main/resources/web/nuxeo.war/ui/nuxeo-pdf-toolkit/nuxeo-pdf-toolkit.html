@@ -132,8 +132,8 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
 
         <nuxeo-pdf-toolkit-thumbnails
           id="thumbnails"
-          sources="[[thumbnailSources]]"
-          loading="[[loading]]"
+          sources="[[_thumbnailSources]]"
+          loading="[[_loading]]"
           debug="[[debug]]"
           has-selection="{{_hasSelection}}"
           has-reordered="{{_hasReordered}}"
@@ -201,7 +201,9 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
           value: false
         },
 
-        thumbnailSources: {
+        // Internal state, not part of the element's public API: one entry per page, '' until its
+        // chunk is rendered.
+        _thumbnailSources: {
           type: Array,
           value: function() { return []; }
         },
@@ -242,7 +244,8 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
           }
         },
 
-        loading: {
+        // Internal state: true while the first chunk is on its way
+        _loading: {
           type: Boolean,
           value: false
         },
@@ -360,7 +363,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
       },
 
       _documentChanged: function() {
-        this.set('thumbnailSources', []);
+        this.set('_thumbnailSources', []);
         this._resetChunkState();
         if (this.$.thumbnails) {
           this.$.thumbnails.reset();
@@ -885,8 +888,8 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
        * user scrolls, see _onChunkNeeded.
        */
       _loadThumbnails: function() {
-        this.set('loading', true);
-        this.set('thumbnailSources', []);
+        this.set('_loading', true);
+        this.set('_thumbnailSources', []);
         this._resetChunkState();
 
         this._requestChunk(1);
@@ -975,7 +978,7 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
               return;
             }
             console.error('Failed to load thumbnails chunk starting at ' + chunkStart, error);
-            this.set('loading', false);
+            this.set('_loading', false);
             this._notifyChunkError(error);
           }.bind(this))
           .then(function() {
@@ -1040,8 +1043,8 @@ Displays a dialog allowing to extract, remove or reorder pages of a PDF document
           this._fillChunk(sources, response, urls);
 
           this._markChunkPrepared(chunkStart, response.chunkStart);
-          this.set('thumbnailSources', sources);
-          this.set('loading', false);
+          this.set('_thumbnailSources', sources);
+          this.set('_loading', false);
           return;
         }
 

@@ -79,6 +79,13 @@ public class PDFToImages {
         /*
          * Image plugin discovery walks the whole classpath and mutates the global IIORegistry.
          * It must happen once per class loading, definitely not on every request.
+         *
+         * Known compromise: a static initializer runs on whichever request thread first touches this
+         * class, so the scan uses THAT thread's context classloader. Doing it from a component
+         * @Activate would be cleaner, but it would mean carrying a component just for this, and the
+         * platform does not do it for us — the only scanForPlugins() in the distribution lives in
+         * nuxeo-platform-pdf-utils, which this plugin does not depend on. Do not simply delete it:
+         * without it the JPEG writer may be missing depending on the deployment.
          */
         ImageIO.scanForPlugins();
     }
@@ -318,6 +325,12 @@ public class PDFToImages {
      * <p>
      * Striping rather than a map of per-key locks: no entry to ever remove, hence no leak and no race
      * on the removal. A hash collision only means two unrelated chunks serialize, which is harmless.
+     * <p>
+     * <b>The lock is JVM-local.</b> On a cluster, a cold chunk requested through N nodes is rendered
+     * once per node, and each writes the same content to the shared TransientStore. That costs
+     * throughput, never correctness — but it is worth knowing when counting PDF openings on a
+     * clustered instance with {@code nuxeo.pdftoolkit.verboseRendering} on: the expected
+     * {@code ceil(pageCount / chunkSize)} becomes that many per node.
      *
      * @since 2025.7
      */
@@ -447,7 +460,7 @@ public class PDFToImages {
     /**
      * @deprecated since 2025.6, use {@link #setHeight(int)} instead. Kept for compatibility (naming typo).
      */
-    @Deprecated
+    @Deprecated(since = "2025.6", forRemoval = true)
     public void setheight(int value) {
         setHeight(value);
     }
@@ -471,7 +484,8 @@ public class PDFToImages {
             return;
         }
 
-        int idx = size.indexOf('x');
+        // Accept both "1024x768" and "1024X768": the separator is a typing detail, not a contract.
+        int idx = size.toLowerCase().indexOf('x');
         if (idx <= 0 || idx == size.length() - 1) {
             throw new IllegalArgumentException("Malformed dimension string: " + size);
         }
@@ -626,7 +640,7 @@ public class PDFToImages {
      * @param reason one of the {@code RENDER_REASON_*} constants
      * @since 2025.7
      */
-    protected void logRendering(String reason, String message, Object... args) {
+    protected static void logRendering(String reason, String message, Object... args) {
 
         if (RENDER_REASON_ENDPOINT.equals(reason) || isVerboseRendering()) {
             log.warn(message, args);
@@ -726,6 +740,12 @@ public class PDFToImages {
      * <p>
      * Returns {@code null} when the blob cannot be identified by content: caching on a weaker key
      * (file name and length, say) could serve another document's images.
+     * <p>
+     * <b>The cache is content-addressed, not an authorization boundary.</b> Two different documents
+     * holding byte-identical PDFs deliberately share their cached images. That is safe only because
+     * every read path resolves the document through the user's session <i>before</i> touching the
+     * cache. Any new code path that serves from the cache without doing so turns this into a
+     * cross-document read.
      *
      * @since 2025.6
      */
@@ -1002,8 +1022,12 @@ public class PDFToImages {
             /*
              * Never leave a half-baked entry behind. An entry that exists without blobs is served as an
              * empty result forever (until the TTL expires), which is worse than no cache at all.
+             *
+             * The isCompleted() check is not redundant: createThumbnails() writes chunks WITHOUT taking
+             * the render lock, so another thread may have filled this very key while we were failing.
+             * Removing it then would throw away a perfectly valid entry.
              */
-            if (cacheKey != null && !stored) {
+            if (cacheKey != null && !stored && !store.isCompleted(cacheKey)) {
                 store.remove(cacheKey);
             }
         }
@@ -1177,6 +1201,24 @@ public class PDFToImages {
     }
 
     /**
+     * Drop the cached chunk holding {@code pageNum}, so the next read renders it again.
+     * <p>
+     * Used when a cached blob turns out to have no file behind it any more: the TransientStore GC or
+     * its size-based eviction fired between the lookup and the read. Removing the entry is what makes
+     * the retry actually render instead of handing back the same dead blob.
+     *
+     * @param pageNum any page of the chunk to drop, starting at 1
+     * @since 2025.8
+     */
+    public void evictChunkOf(int pageNum) {
+
+        String cacheKey = getChunkCacheKey(chunkStartFor(pageNum, getChunkSize()));
+        if (cacheKey != null) {
+            getTransientStore().remove(cacheKey);
+        }
+    }
+
+    /**
      * Return the JPEG preview of a page, resized to at most {@link #PREVIEW_PAGE_MAX_SIZE} on each side.
      *
      * @param pageNum the page to render, starting at 1
@@ -1235,7 +1277,8 @@ public class PDFToImages {
             throw new NuxeoException(
                     "Failed to extract page " + pageNum + " of \"" + pdfBlob.getFilename() + "\" as a JPEG.", e);
         } finally {
-            if (cacheKey != null && !stored) {
+            // See renderChunk(): never remove an entry another thread completed in the meantime.
+            if (cacheKey != null && !stored && !store.isCompleted(cacheKey)) {
                 store.remove(cacheKey);
             }
         }
@@ -1263,11 +1306,19 @@ public class PDFToImages {
 
     /**
      * Return an array of Base64 encoding of the input blobs (in same order).
+     * <p>
+     * <b>Unbounded, which is not a feature:</b> it holds every blob, its base64 form and the resulting
+     * JSON in memory at once, with no budget of any kind. {@code PDFLabs.GetThumbnails} stopped using
+     * it in 2025.8 precisely for that reason — it now encodes incrementally and stops at
+     * {@code PDFThumbnailsOp.MAX_BASE64_PAYLOAD}. Nothing in the plugin calls this any more; do not
+     * reintroduce a caller without a budget.
      *
      * @param blobs the blobs to encode
      * @return the JSON array of base64 strings
      * @since 2025.2
+     * @deprecated since 2025.8, encode incrementally against a budget instead.
      */
+    @Deprecated(since = "2025.8", forRemoval = true)
     public static JSONArray toBase64JSONArray(BlobList blobs) {
 
         JSONArray array = new JSONArray();

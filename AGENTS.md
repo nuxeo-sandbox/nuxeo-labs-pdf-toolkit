@@ -30,7 +30,7 @@ mvn -pl nuxeo-labs-pdf-toolkit-core test -Dtest=TestOperationsDestinations#shoul
   `connect.nuxeo.com`. A cold `mvn clean install` also pulls the `nuxeo-nxr-server` zip for the
   `-package` module, which is large — prefer the `-pl ...-core` loop while iterating.
 - No CI, no formatter config, no lint step. `mvn clean install` is the whole gate.
-- 113 tests across 4 classes, all green, ~70 s. A failure is a real regression, not flakiness.
+- 116 tests across 4 classes, all green, ~70 s. A failure is a real regression, not flakiness.
 - `target/` may hold stale artifacts from an old `lts2023` build — never trust it without a
   `clean`. `nuxeo-labs-pdf-toolkit-core/bin/` is stale Eclipse output from before the
   `nuxeo.labs.pdf.tools` → `nuxeo.labs.pdf.toolkit` rename; it is gitignored, ignore it.
@@ -40,7 +40,7 @@ mvn -pl nuxeo-labs-pdf-toolkit-core test -Dtest=TestOperationsDestinations#shoul
 | Module | What it is |
 |---|---|
 | `-core` | All Java: PDF logic + 6 operations + the REST endpoint. The only module with tests. |
-| `-webui` | Resources only (Polymer 2 HTML + i18n). No Java, no dependencies, no JS build/lint. |
+| `-webui` | Resources only (Polymer 2 HTML + i18n). No Java, no dependencies, no JS build/lint. It calls `PDFLabs.*` but declares **no** dependency on `-core`: the two always ship together in the marketplace package, so this only matters when hot-reloading a single bundle. |
 | `-package` | Marketplace zip, assembled by `src/main/assemble/assembly.xml` (ant-assembly-maven-plugin). Rarely needs edits. |
 
 ## Core: how it is wired
@@ -182,6 +182,20 @@ simply threw above 150 pages.
   log on its own and stayed invisible when verbose rendering was turned on — the four
   `shouldLog*Rendering*` tests capture the level with an in-memory appender and guard this.
 
+### Odds and ends that bit once
+
+- `ImageIO.scanForPlugins()` is in a static initializer, so it runs on whichever request thread
+  touches the class first and mutates the **global** `IIORegistry` with that thread's classloader.
+  Ugly, and kept on purpose: the platform does not scan for us (the only call in the distribution is
+  in `nuxeo-platform-pdf-utils`, which this plugin does not depend on). Do not "clean it up" by
+  deleting it. `ImageIO.setUseCache(false)` is *not* the fix either — it is a global JVM setting, and
+  `ImageIO.write(img, fmt, File)` goes through a `FileImageOutputStream` that never spills anyway.
+- `RENDER_LOCKS` is JVM-local: on a cluster a cold chunk is rendered once per node. Throughput, not
+  correctness — but it changes the numbers when auditing with `verboseRendering`.
+- `toBase64JSONArray`, `setSize(String)`, `createThumbnails(String)` and `setheight` have no caller
+  left. The first is `@Deprecated(forRemoval = true)` because it is unbounded: it was the vehicle of
+  the `GetThumbnails` heap problem, and a new caller would bring it straight back.
+
 ### Temporary blobs — the only correct way
 
 Always `Blobs.createBlobWithExtension(ext)`, then write into `blob.getFile()`.
@@ -210,8 +224,13 @@ Consequences, all enforced by tests — keep them:
 - Write through `putInCache()`, which sets `completed` to `true` only after a successful
   `putBlobs`, and swallows `MaximumTransientSpaceExceeded`: a full cache must never fail a
   request whose result is already computed.
-- The `finally` block calls `store.remove(key)` when nothing was stored, so a failed run never
-  leaves a poisoned entry behind.
+- The `finally` block calls `store.remove(key)` when nothing was stored **and the entry is not
+  completed**, so a failed run never leaves a poisoned entry behind — and never deletes one a
+  concurrent `createThumbnails()` just filled, since that path writes chunks without taking the
+  render lock. Do not drop the `isCompleted` check.
+- A blob read from the store can lose its file between the lookup and the read (GC, size eviction).
+  The endpoint catches that, calls `evictChunkOf()` and renders once more before giving up with a
+  **503**; do not turn it back into a 500.
 - Cache keys are built by `buildCacheKey()` and **include the rendering parameters and the chunk
   start** (`width`, `height`, `dpi`, `-c<chunkStart>` for thumbnails; page number and preview
   constants for previews). Dropping them serves wrongly-sized images, or the wrong pages.
@@ -248,7 +267,7 @@ Keep a factor ≥ 2, or the thumbnails get visibly worse.
 | `MAX_RENDERED_PIXELS` | 40 M (~160 MB) | Absolute ceiling for one page, whatever the geometry, the dpi and the requested size. |
 | `THUMBNAIL_SIZE_LADDER` / `DPI_LADDER` | 120/256/512/1024/2000 and 72/150/300 | The only sizes rendered. Snapped **down**, first step is the floor, last step is the cap (so there is no separate clamping). Bounds the distinct cache keys, see the endpoint section. |
 | `DEFAULT_MAX_PAGES` | 150 | The thumbnails operation builds the whole base64 payload in memory, ~230 KB of heap per page. Applies to `GetThumbnails` only — **not** to `PrepareThumbnails`, which is bounded by the chunk, nor to extract/remove/reorder. |
-| `PDFThumbnailsOp.MAX_BASE64_PAYLOAD` | 5 MB | Of *jpeg* bytes. Peak heap is ~4x that: base64 is 1.33x, held in a `JSONArray`, `toString()` duplicates it, `createJSONBlob` copies again. Checked **while** encoding, not after: summing the blob lengths afterwards measured the wrong thing and had already paid for everything. |
+| `PDFThumbnailsOp.MAX_BASE64_PAYLOAD` | 20 MB | Of *jpeg* bytes, so ~80 MB of heap: base64 is 1.33x, held in a `JSONArray`, `toString()` duplicates it, `createJSONBlob` copies again. Checked **while** encoding, not after: summing the blob lengths afterwards measured the wrong thing and had already paid for everything. Deliberately above the working set — 150 pages at 512/150 is ~8 MB — so that the *page* limit is what users meet, not this one. It was briefly lowered to 5 MB, which made it the binding constraint instead of the backstop. |
 | `DEFAULT_THUMBNAILS_MAX_PAGES` | 2000 | Plafond of `PrepareThumbnails`. Not about the server (rendering is chunked) but about the browser: one tile per page, and a few thousand tiles freeze a tab. |
 | `PDFTools.MAX_PDF_SIZE` | 200 MB | PDFBox loads the document in memory. Checked in `checkIsProcessablePdf`. |
 | `PREVIEW_DPI` / `PREVIEW_PAGE_MAX_SIZE` | 300 / 2048 | Preview is rendered then resized by the `pictureResize` converter. Cache and return the **resized** blob, not the full-size one. Raise the cap, never the DPI: the 300 dpi render already holds more detail than the cap keeps, so the cap is free while the DPI costs quadratically. |
@@ -363,6 +382,10 @@ Polymer 2 / Web UI legacy elements under
     - the drag handlers manipulate classes through `classList`, **never through a bound
       property**: changing one would re-render the `dom-repeat` and abort the drag. That is also
       why the count badge is a node already in the template whose text is filled imperatively.
+    - the auto-scroll pointer (`_dragMouseY`) is fed by a `dragover` listener on the **container**,
+      bound in `_bindScroll`, not only by the per-tile handler: `dragover` does not fire over the
+      grid gap, the padding or the empty area under the last row, which is exactly where the user
+      goes to reach the edge and trigger the scroll.
     - `_onDrop` replaces `pages`, so the `dom-repeat` re-renders and nodes get recycled. Always
       clear the drag classes on **every** tile in `_onDragEnd`, never on `e.currentTarget` alone.
   - `-actions.html` → buttons + destination dialog, calls **no** operation, fires
@@ -382,6 +405,9 @@ Polymer 2 / Web UI legacy elements under
     `pdftoolkit.confirm.removePages` is kept as a deprecated alias for Studio overrides;
   - `Nuxeo.LayoutBehavior` is `[RoutingBehavior, FiltersBehavior, FormatBehavior]`, so there is
     no `this.notify()`. Use `this.fire('notify', { message: ... })`.
+- `_thumbnailSources` and `_loading` on the orchestrator are **internal state**, underscore-prefixed
+  on purpose: the public attributes of `<nuxeo-pdf-toolkit>` are the ones in the README table, and
+  nothing else. Keep new internals underscored or they become API by accident.
 - Nothing is transported as base64 any more: `_loadThumbnails()` calls `PDFLabs.PrepareThumbnails`
   and the `<img>` tags fetch the URLs it returns. Those URLs are **relative to the Nuxeo
   application root**, so `_getBaseUrl()` prefixes them with `this.$.nx.url` — do not drop that,
@@ -394,6 +420,10 @@ Polymer 2 / Web UI legacy elements under
     computing them from a measured grid (columns x row height). The computed version silently
     yielded an *empty* range at some scroll positions — tiles that never loaded, no error anywhere.
     Measure, do not deduce. ~10 probes locate the first visible tile among a thousand.
+    The search is only valid while `querySelectorAll` returns the tiles in **vertical** order, which
+    is a CSS assumption (`grid-auto-flow: column`, a sticky child, RTL would break it). It is checked
+    on the two ends, with a linear scan as the fallback, because the failure mode is again a silent
+    empty range. `selection-harness.js` covers both paths.
   - Tiles are read through **`data-index`**, never through their rank in the `querySelectorAll`
     result: the two are not guaranteed to match, which is why the drag handlers already did so.
   - `applyChunk()` matches tiles on **`originalPageNumber`, never on position** (after a reorder the
