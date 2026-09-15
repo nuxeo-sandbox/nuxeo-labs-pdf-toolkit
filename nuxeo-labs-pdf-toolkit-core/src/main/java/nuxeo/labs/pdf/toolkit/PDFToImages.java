@@ -417,11 +417,21 @@ public class PDFToImages {
         return snapped;
     }
 
+    /**
+     * Set the max thumbnail width, <b>snapped down</b> to {@link #THUMBNAIL_SIZE_LADDER}.
+     * <p>
+     * Asking for 700 therefore renders at 512, and a non-positive value falls back on
+     * {@link #DEFAULT_THUMBNAIL_SIZE}. Read {@link #getWidth()} to know what was actually applied —
+     * anything building a thumbnail URL must emit that, not the value it passed here.
+     */
     public void setWidth(int value) {
         width = value > 0 ? snapDown(value, THUMBNAIL_SIZE_LADDER) : DEFAULT_THUMBNAIL_SIZE;
     }
 
     /**
+     * Set the max thumbnail height, <b>snapped down</b> to {@link #THUMBNAIL_SIZE_LADDER}. See
+     * {@link #setWidth(int)}.
+     *
      * @since 2025.6
      */
     public void setHeight(int value) {
@@ -465,12 +475,14 @@ public class PDFToImages {
         setHeight(value);
     }
 
+    /** Square box, snapped down to {@link #THUMBNAIL_SIZE_LADDER}. See {@link #setWidth(int)}. */
     public void setSize(int size) {
 
         setWidth(size);
         setHeight(size);
     }
 
+    /** Both sides snapped down to {@link #THUMBNAIL_SIZE_LADDER}. See {@link #setWidth(int)}. */
     public void setSize(int width, int height) {
 
         setWidth(width);
@@ -494,7 +506,7 @@ public class PDFToImages {
         String hStr = size.substring(idx + 1).trim();
 
         try {
-            // Always go through the setters: they normalize non-positive values and apply the upper bounds.
+            // Always go through the setters: they normalize non-positive values and snap to the ladder.
             setSize(Integer.parseInt(wStr), Integer.parseInt(hStr));
         } catch (NumberFormatException e) {
             throw new IllegalArgumentException("Malformed dimension string: " + size, e);
@@ -502,6 +514,14 @@ public class PDFToImages {
 
     }
 
+    /**
+     * Set the rendering resolution, <b>snapped down</b> to {@link #DPI_LADDER}.
+     * <p>
+     * Asking for 110 therefore renders at 72, and a non-positive value falls back on
+     * {@link #DEFAULT_DPI}. Read {@link #getDpi()} to know what was actually applied. Note the dpi is
+     * only an upper bound at render time anyway: {@link #renderPage} lowers it further on a page
+     * large enough that it would overflow the requested size.
+     */
     public void setDpi(int value) {
         dpi = value > 0 ? snapDown(value, DPI_LADDER) : DEFAULT_DPI;
     }

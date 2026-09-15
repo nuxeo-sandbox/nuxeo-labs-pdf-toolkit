@@ -195,7 +195,7 @@ Each URL is served by the plugin REST endpoint, `GET /nuxeo/site/pdftoolkit/thum
 * only **reads** the cache filled by the operation on the nominal path — it never reopens the PDF, which is what makes serving a long document cheap;
 * falls back on rendering the **whole chunk** holding the page — never that single page — if the cache entry expired in the meantime, and takes a lock so that several browser connections hitting the same cold chunk only trigger one rendering;
 * sends an `ETag` in every case, plus `Cache-Control: private, max-age=3600` when `v` is present, or `private, no-cache` when it is not — a plain URL is then revalidated on each request, which costs a `304` rather than a full transfer;
-* answers `400` for a request it cannot honour (the document has no blob at that `xpath`, the blob is not a PDF, the property does not exist) and `404` for an unknown document or a page beyond the end of the PDF.
+* answers `400` for a request it cannot honour (the document has no blob at that `xpath`, the blob is not a PDF, the property does not exist), `404` for an unknown document or a page beyond the end of the PDF, and `503` in the rare case where a cached image lost its file between the lookup and the read and a second rendering did not recover it — that one is worth retrying.
 
 > [!NOTE]
 > Serving every page of a document costs one PDF opening **per chunk**, never one per page: 20 openings for a 1000 pages PDF with the default chunk size. See "Checking the chunking" below to observe it.
