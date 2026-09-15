@@ -2,7 +2,7 @@ Bundle-ActivationPolicy: lazy
 Bundle-ClassPath: .
 Manifest-Version: 1.0
 Bundle-Vendor: nuxeo.labs.pdf.toolkit
-Bundle-Version: 2025.8.0
+Bundle-Version: 2025.9.0
 Bundle-Name: nuxeo-labs-pdf-toolkit-core
 Bundle-ManifestVersion: 2
 Bundle-SymbolicName: nuxeo.labs.pdf.toolkit.nuxeo-labs-pdf-toolkit-core;singleton=true
