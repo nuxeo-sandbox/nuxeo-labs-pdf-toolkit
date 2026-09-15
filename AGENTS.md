@@ -12,13 +12,14 @@ path, a credential or any PII in it.
 
 ## Freshness
 
-Every factual claim in this file was checked against the tree at commit `f6ccf9b`
-(2026-09-15, "Document the snapping on the setters, and the 503 on the endpoint").
+Every factual claim in this file was checked against the tree at commit `c7dc2f7`
+(2026-09-15, "Post 2025.8.0 release" — the audit was done at `f6ccf9b`, and no source file changed
+between the two).
 
 **Before reviewing this file again, get the delta instead of re-reading the codebase:**
 
 ```bash
-git diff f6ccf9b..HEAD --stat
+git diff c7dc2f7..HEAD --stat
 ```
 
 Empty output means this file is current: say so and stop. Otherwise audit only the files it lists.
@@ -30,7 +31,7 @@ not this file's own edits.
 every one a version string. Confirm that and discount it:
 
 ```bash
-git diff f6ccf9b..HEAD -- '*pom.xml' '*MANIFEST.MF' | rg '^[+-]' | rg -v '^(\+\+\+|---)'
+git diff c7dc2f7..HEAD -- '*pom.xml' '*MANIFEST.MF' | rg '^[+-]' | rg -v '^(\+\+\+|---)'
 ```
 
 Every line must be a `<version>` or a `Bundle-Version:`. Anything else — a new `Nuxeo-Component`
@@ -210,6 +211,15 @@ This is what makes a 1000 pages PDF work at all; before it, the operation simply
   log on its own and stayed invisible when verbose rendering was turned on.
 - `RENDER_LOCKS` is JVM-local: on a cluster a cold chunk is rendered once per node. Throughput, not
   correctness — but it changes the numbers when auditing with `verboseRendering`.
+- **Rendering is single-threaded end to end, and that is not an oversight.** `renderChunk` walks its
+  pages in a plain `for` loop, and the dialog sends one chunk request at a time (`_chunkLoading`
+  gates `_drainChunkQueue`). One user scrolling one document therefore occupies **exactly one core**,
+  however many the machine has — so adding vCPUs buys concurrent users, never a faster scroll. Only
+  single-thread speed helps the person waiting. `README.md` states this for administrators sizing a
+  server; the reason it must stay that way is here: **`PDDocument` and `PDFRenderer` are not
+  thread-safe**, so rendering pages in parallel means one parsed document per thread — N times the
+  parse cost and N times the heap against `MAX_RENDERED_PIXELS`, on a box that is usually CPU-bound
+  already. Do not "optimise" this into a `parallelStream()`.
 
 ### TransientStore cache — read this before touching `PDFToImages`
 
