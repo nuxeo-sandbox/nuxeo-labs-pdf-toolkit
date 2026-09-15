@@ -457,6 +457,51 @@ Pick a value from the ladder when you set `thumbnailWidth` / `thumbnailHeight` /
 
 <br />
 
+## About Big PDFs and S3 Storage
+
+The plugin renders thumbnails by chunks, so a document of several hundred pages opens as fast as a short one and never builds more than one chunk of images at a time. That design holds on any storage. What changes on a cloud deployment is **where the PDF itself lives**, and how fast the CPU underneath happens to be.
+
+<br />
+
+### Size the S3 local cache for your documents
+
+The PDF is opened once per chunk. When blobs are stored on S3, each of those openings asks the blob provider for a local file — and the provider only has one **if the document is still in its local cache**. If it is not, the whole PDF is downloaded from S3 again. Scrolling through a long document can then mean downloading the same file over and over, which dwarfs the rendering itself.
+
+That cache is shared by every blob the instance touches, and its default size is modest. If your users handle PDFs of several hundred pages, weighing dozens of megabytes, raise it in `nuxeo.conf`. For example:
+
+```
+nuxeo.s3storage.cachesize = 5GB
+```
+
+if your disk space allows for that. The cache lives in the server's temporary directory, so this costs disk space, not memory.
+
+The symptom of a cache that is too small is easy to recognise: **every** scroll is slow, not just the first one. When the cache is large enough, the first display of a document pays for the download once and every subsequent scroll is noticeably faster.
+
+The same reasoning applies to any other caching blob provider — only the property name changes.
+
+<br />
+
+### If it is still not fast enough, pick a faster CPU, not more cores
+
+Rasterizing a page is pure CPU work, and the plugin does it **one page at a time, on a single thread**: a chunk is rendered by one thread, and the dialog requests one chunk at a time. One user scrolling one document therefore uses exactly **one core**, however many the machine has.
+
+So, when resizing a server for this:
+
+* **A faster core makes the scroll faster.** This is the only thing that helps a single user waiting in front of the dialog.
+* **More cores do not.** They let more people browse PDFs simultaneously — roughly one concurrent user per core. That is capacity, not latency.
+
+One trap worth knowing on AWS: **burstable instance types (the `t` family) throttle sustained CPU** once their credits are exhausted, and rasterizing hundreds of pages is exactly that kind of sustained load. Moving to a non-burstable instance of comparable size can change the experience far more than adding vCPUs.
+
+<br />
+
+### And it may well be fine as it is
+
+Documents of several hundred pages are usually a small fraction of what a repository holds. Before resizing a server for them, it is worth asking how often anyone actually opens one. Letting a user wait a few extra seconds for a thousand-page PDF once a month is often a better trade than paying for a bigger instance all year round — and for the short, ordinary PDFs that make up most of a corpus, the dialog is fast on modest hardware.
+
+If a particular occasion needs it — a demo, a migration, a batch of unusually large documents — resizing the instance for that event and scaling back down afterwards is usually the cheapest answer of all.
+
+<br />
+
 ## Installation
 
 The plugin is available on [Nuxeo MarketPlace](https://connect.nuxeo.com/nuxeo/site/marketplace/package/nuxeo-labs-pdf-toolkit). So you can
