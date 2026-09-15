@@ -499,7 +499,7 @@ dragging a page to the far end working on a 1000 pages document.
   does `applyChunk` (the viewport may span several chunks) and a window resize.
 - `<nuxeo-operation>` is a single shared element, so chunk calls are **serialized**: `_chunkQueue`
   holds the pending starts and `_chunkLoading` gates the drain. Two overlapping calls would fight
-  over `op.params`.
+  over `op.params`. Nothing removes a queued chunk that scrolled out of view — see "Known gaps".
 - Every chunk call captures `_chunkGeneration` and drops its response if it changed. `_resetChunkState()`
   bumps it and `_closeDialog()` calls it: without that, closing the dialog after a fast scroll kept
   rendering chunks nobody would look at, and a response for the previous document could rebuild the
@@ -594,6 +594,26 @@ dragging a page to the far end working on a 1000 pages document.
 - i18n: keys namespaced `pdftoolkit.*` in `ui/i18n/messages.json` and `messages-fr.json`.
   `OSGI-INF/deployment-fragment.xml` **appends** them to the server files and maps `messages-fr.json`
   to both `fr` and `fr-FR`. Add every new key to both files; never hardcode a user-visible string.
+
+## Known gaps, deliberately not fixed
+
+Both were specced against a real deployment (S3 blobs, a burstable EC2 instance) and left undone
+because the common case — ordinary PDFs of a few dozen pages — is already fast. Neither is a bug,
+and `README.md` carries the operational side of the story under "About Big PDFs and S3 Storage".
+
+- **The chunk queue never drops stale entries.** `_chunkQueue` is FIFO and nothing re-checks whether
+  a queued chunk is still on screen, so on a slow backend a fast scroll renders every chunk you
+  passed *before* the one you are looking at. Invisible locally, where chunks drain faster than a
+  user scrolls; at seconds per chunk it multiplies the wait several-fold. If it is ever fixed:
+  record the set from the latest `_onChunkNeeded`, drop queued heads no longer in it, and
+  `delete this._pendingChunks[start]` for every one dropped — otherwise that chunk becomes
+  permanently unrequestable, the same failure `applyChunk` already guards against. Worth a case in
+  `scroll-harness.js`.
+- **`PDFRenderer.setSubsamplingAllowed` is left at its default `false`.** Enabling it at the two
+  thumbnail sites — `renderChunk` and `createThumbnails`, *not* `getJpegPreviewImage`, where the
+  quality trade stops being free — lets PDFBox read fewer pixels from large embedded images instead
+  of decoding them in full and throwing the detail away. Costs nothing on text PDFs, a real win on
+  scanned ones. Available in the PDFBox the platform pins (3.0.4).
 
 ## Conventions
 
